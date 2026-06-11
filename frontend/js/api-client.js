@@ -98,6 +98,32 @@ class ApiClient {
         return this.request('/system/stats');
     }
 
+    async runStressAnalysis(porcelainId) {
+        return this.request(`/porcelains/${porcelainId}/stress-analysis`, {
+            method: 'POST',
+        });
+    }
+
+    async getStressAnalysis(porcelainId) {
+        return this.request(`/porcelains/${porcelainId}/stress-analysis`);
+    }
+
+    async predictPenetration(crackId, materialId, targetDepthUm) {
+        const options = { method: 'POST' };
+        if (targetDepthUm !== undefined && targetDepthUm !== null) {
+            options.body = JSON.stringify({ target_depth_um: targetDepthUm });
+        }
+        return this.request(`/cracks/${crackId}/penetration/${materialId}`, options);
+    }
+
+    async runBendingTest(crackId, materialId, porcelainId) {
+        const options = { method: 'POST' };
+        if (porcelainId !== undefined && porcelainId !== null) {
+            options.body = JSON.stringify({ porcelain_id: porcelainId });
+        }
+        return this.request(`/cracks/${crackId}/bending-test/${materialId}`, options);
+    }
+
     async getActiveAlertsCount() {
         const response = await this.getAlerts('ACTIVE', 1, 1);
         return response.pagination?.total || 0;
