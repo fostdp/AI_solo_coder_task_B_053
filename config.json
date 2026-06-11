@@ -37,6 +37,29 @@
       "max_particles": 10000,
       "simulation_steps": 1000,
       "time_step": 1e-9
+    },
+    "stress_fem": {
+      "grid_resolution": 50,
+      "youngs_modulus_gpa": 70.0,
+      "poissons_ratio": 0.22,
+      "crack_density_sensitivity": 50.0,
+      "max_stress_mpa": 300.0
+    },
+    "washburn": {
+      "default_surface_tension_n_m": 0.072,
+      "default_contact_angle_deg": 30.0,
+      "tortuosity_factor": 1.5,
+      "surface_roughness_factor": 1.2,
+      "time_series_points": 100
+    },
+    "bending_test": {
+      "support_span_mm": 40.0,
+      "loading_span_mm": 20.0,
+      "specimen_width_mm": 10.0,
+      "specimen_thickness_mm": 5.0,
+      "porcelain_strength_mpa": 120.0,
+      "repair_interface_strength_ratio": 0.85,
+      "load_steps": 50
     }
   }
 }
