@@ -2,6 +2,9 @@
 #include "database.h"
 #include "crack_propagation.h"
 #include "dem_simulation.h"
+#include "stress_analysis.h"
+#include "washburn_model.h"
+#include "four_point_bending.h"
 #include <iostream>
 #include <fstream>
 #include <filesystem>
@@ -284,6 +287,164 @@ void HttpServer::register_api_routes() {
         return json_response(j);
     };
     routes_.push_back(std::move(r10));
+
+    Route r11;
+    r11.pattern = std::regex(R"(^/api/porcelains/(\d+)/stress-analysis$)");
+    r11.method = http::verb::post;
+    r11.handler = [this](const http::request<http::string_body>& req, const std::smatch& matches) {
+        int porcelain_id = std::stoi(matches[1].str());
+        auto cracks = DatabaseManager::instance().get_cracks_by_porcelain(porcelain_id);
+        for (auto& c : cracks) {
+            auto points = DatabaseManager::instance().get_crack_points(static_cast<int>(c.id));
+            c.points = points;
+        }
+
+        algorithms::StressAnalysisFEM fem;
+        auto result = fem.analyze(porcelain_id, cracks);
+
+        int64_t analysis_id = DatabaseManager::instance().insert_stress_analysis(result);
+        DatabaseManager::instance().insert_stress_grid_points(analysis_id, result.grid_points);
+
+        return json_response(fem.result_to_json(result));
+    };
+    routes_.push_back(std::move(r11));
+
+    Route r12;
+    r12.pattern = std::regex(R"(^/api/porcelains/(\d+)/stress-analysis$)");
+    r12.method = http::verb::get;
+    r12.handler = [this](const http::request<http::string_body>&, const std::smatch& matches) {
+        int porcelain_id = std::stoi(matches[1].str());
+        auto result = DatabaseManager::instance().get_latest_stress_analysis(porcelain_id);
+        json grid_points_json = json::array();
+        for (const auto& gp : result.grid_points) {
+            grid_points_json.push_back({
+                {"x", gp.x}, {"y", gp.y}, {"z", gp.z},
+                {"stress", gp.stress},
+                {"crack_density", gp.crack_density},
+                {"principal_direction", gp.principal_direction}
+            });
+        }
+        json j = {
+            {"grid_points", grid_points_json},
+            {"max_von_mises", result.max_von_mises},
+            {"avg_von_mises", result.avg_von_mises},
+            {"high_stress_area_ratio", result.high_stress_area_ratio}
+        };
+        return json_response(j);
+    };
+    routes_.push_back(std::move(r12));
+
+    Route r13;
+    r13.pattern = std::regex(R"(^/api/cracks/(\d+)/penetration/(\d+)$)");
+    r13.method = http::verb::post;
+    r13.handler = [this](const http::request<http::string_body>& req, const std::smatch& matches) {
+        int crack_id = std::stoi(matches[1].str());
+        int material_id = std::stoi(matches[2].str());
+
+        auto crack = DatabaseManager::instance().get_crack(crack_id);
+        auto points = DatabaseManager::instance().get_crack_points(crack_id);
+        crack.points = points;
+
+        auto materials = DatabaseManager::instance().get_repair_materials();
+        RepairMaterial material;
+        for (const auto& m : materials) {
+            if (m.id == material_id) {
+                material = m;
+                break;
+            }
+        }
+
+        double target_depth_um = crack.max_depth;
+        if (!req.body().empty()) {
+            try {
+                json body = json::parse(req.body());
+                if (body.contains("target_depth_um")) {
+                    target_depth_um = body["target_depth_um"].get<double>();
+                }
+            } catch (...) {
+            }
+        }
+
+        algorithms::WashburnPenetrationModel model;
+        auto result = model.predict(crack_id, material_id, crack, material, target_depth_um);
+
+        DatabaseManager::instance().insert_penetration_prediction(result);
+
+        json j = model.result_to_json(result);
+        j["predicted_time_s"] = result.predicted_time_s;
+        j["penetration_rate_um_s"] = result.penetration_rate_um_s;
+        j["time_series"] = result.time_series;
+        j["depth_series"] = result.depth_series;
+        return json_response(j);
+    };
+    routes_.push_back(std::move(r13));
+
+    Route r14;
+    r14.pattern = std::regex(R"(^/api/cracks/(\d+)/bending-test/(\d+)$)");
+    r14.method = http::verb::post;
+    r14.handler = [this](const http::request<http::string_body>& req, const std::smatch& matches) {
+        int crack_id = std::stoi(matches[1].str());
+        int material_id = std::stoi(matches[2].str());
+
+        auto crack = DatabaseManager::instance().get_crack(crack_id);
+        auto points = DatabaseManager::instance().get_crack_points(crack_id);
+        crack.points = points;
+
+        auto materials = DatabaseManager::instance().get_repair_materials();
+        RepairMaterial material;
+        for (const auto& m : materials) {
+            if (m.id == material_id) {
+                material = m;
+                break;
+            }
+        }
+
+        int porcelain_id = crack.porcelain_id;
+        if (!req.body().empty()) {
+            try {
+                json body = json::parse(req.body());
+                if (body.contains("porcelain_id")) {
+                    porcelain_id = body["porcelain_id"].get<int>();
+                }
+            } catch (...) {
+            }
+        }
+
+        algorithms::FourPointBendingTest test;
+        auto result_repaired = test.simulate(porcelain_id, crack_id, material_id, crack, material, true);
+        auto result_unrepaired = test.simulate(porcelain_id, crack_id, material_id, crack, material, false);
+
+        BendingTestResult final_result;
+        final_result.porcelain_id = porcelain_id;
+        final_result.crack_id = crack_id;
+        final_result.material_id = material_id;
+        final_result.original_strength_mpa = result_repaired.original_strength_mpa;
+        final_result.unrepaired_strength_mpa = result_unrepaired.repaired_strength_mpa;
+        final_result.repaired_strength_mpa = result_repaired.repaired_strength_mpa;
+        final_result.strength_recovery_ratio = final_result.original_strength_mpa > 0
+            ? final_result.repaired_strength_mpa / final_result.original_strength_mpa
+            : 0.0;
+        final_result.load_displacement_load = result_repaired.load_displacement_load;
+        final_result.load_displacement_disp = result_repaired.load_displacement_disp;
+
+        DatabaseManager::instance().insert_bending_test_result(final_result);
+
+        json j = test.result_to_json(final_result);
+        j["original_strength_mpa"] = final_result.original_strength_mpa;
+        j["unrepaired_strength_mpa"] = final_result.unrepaired_strength_mpa;
+        j["repaired_strength_mpa"] = final_result.repaired_strength_mpa;
+        j["strength_recovery_ratio"] = final_result.strength_recovery_ratio;
+        json ld_curve = json::array();
+        for (size_t i = 0; i < final_result.load_displacement_load.size() && i < final_result.load_displacement_disp.size(); ++i) {
+            ld_curve.push_back({
+                {"displacement_mm", final_result.load_displacement_disp[i]},
+                {"load_n", final_result.load_displacement_load[i]}
+            });
+        }
+        j["load_displacement_curve"] = ld_curve;
+        return json_response(j);
+    };
+    routes_.push_back(std::move(r14));
 }
 
 void HttpServer::do_accept() {
