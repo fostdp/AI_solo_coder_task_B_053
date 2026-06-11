@@ -7,6 +7,9 @@ class PorcelainViewer {
         this.gradient = new CrackGradient({ maxDepth: 200 });
         this.mergedCrackLines = new MergedCrackLines();
         this.mergedCrackTubes = new MergedCrackTubes();
+        this.stressHeatmap = null;
+        this.repairTool = null;
+        this.stressData = null;
 
         this.model.startAnimation();
     }
@@ -15,12 +18,17 @@ class PorcelainViewer {
         return this.model.createPorcelainVase();
     }
 
-    loadPorcelain(porcelainData, cracksData = []) {
+    loadPorcelain(porcelainData, cracksData = [], stressData = null) {
         this.clearScene();
         this.createPorcelainVase();
 
         if (cracksData.length > 0) {
             this.loadCracks(cracksData);
+        }
+
+        if (stressData) {
+            this.stressData = stressData;
+            this.updateStressHeatmap(stressData);
         }
 
         this.model.focusTarget();
@@ -56,6 +64,15 @@ class PorcelainViewer {
     clearScene() {
         this.model.clearPorcelainMesh();
         this.clearCracks();
+
+        if (this.stressHeatmap) {
+            this.stressHeatmap.dispose();
+            this.stressHeatmap = null;
+        }
+        if (this.repairTool) {
+            this.repairTool.dispose();
+            this.repairTool = null;
+        }
     }
 
     clearCracks() {
@@ -90,6 +107,14 @@ class PorcelainViewer {
     destroy() {
         this.clearCracks();
 
+        if (this.stressHeatmap) {
+            this.stressHeatmap.dispose();
+            this.stressHeatmap = null;
+        }
+        if (this.repairTool) {
+            this.repairTool.dispose();
+            this.repairTool = null;
+        }
         if (this.mergedCrackLines) {
             this.mergedCrackLines.dispose();
         }
@@ -98,5 +123,75 @@ class PorcelainViewer {
         }
 
         this.model.dispose();
+    }
+
+    initStressHeatmap() {
+        if (this.stressHeatmap) {
+            this.stressHeatmap.dispose();
+        }
+        this.stressHeatmap = new StressHeatmap(this.model.porcelainMesh);
+        this.stressHeatmap.addToScene(this.model.scene);
+    }
+
+    updateStressHeatmap(gridPoints) {
+        if (!this.stressHeatmap) {
+            this.initStressHeatmap();
+        }
+        this.stressHeatmap.updateStressData(gridPoints);
+        this.stressHeatmap.showHeatmap();
+    }
+
+    toggleStressHeatmap() {
+        if (!this.stressHeatmap) {
+            return false;
+        }
+        return this.stressHeatmap.toggleHeatmap();
+    }
+
+    getStressAtPoint(x, y, z) {
+        if (!this.stressHeatmap) {
+            return null;
+        }
+        return this.stressHeatmap.getStressAtPoint(x, y, z);
+    }
+
+    initRepairTool() {
+        if (this.repairTool) {
+            this.repairTool.dispose();
+        }
+        this.repairTool = new VirtualRepairTool();
+        this.repairTool.applyToScene(this);
+    }
+
+    enableRepairTool() {
+        if (this.repairTool) {
+            this.repairTool.enable();
+        }
+    }
+
+    disableRepairTool() {
+        if (this.repairTool) {
+            this.repairTool.disable();
+        }
+    }
+
+    setRepairRadius(r) {
+        if (this.repairTool) {
+            this.repairTool.setRepairRadius(r);
+        }
+    }
+
+    getRepairProgress() {
+        if (!this.repairTool) {
+            return 0;
+        }
+        return this.repairTool.getRepairProgress();
+    }
+
+    getRepairedCrackIds() {
+        if (!this.repairTool) {
+            return [];
+        }
+        return this.repairTool.getRepairedCrackIds();
     }
 }
