@@ -259,4 +259,132 @@ struct WsBroadcastMessage {
     json payload;
 };
 
+struct StressTensor {
+    double sigma_xx;
+    double sigma_yy;
+    double sigma_zz;
+    double tau_xy;
+    double tau_yz;
+    double tau_zx;
+    double von_mises;
+};
+
+struct StressGridPoint {
+    double x, y, z;
+    StressTensor stress;
+    double crack_density;
+    double principal_direction;
+};
+
+struct StressAnalysisResult {
+    int64_t id;
+    int porcelain_id;
+    std::string method;
+    json parameters;
+    std::vector<StressGridPoint> grid_points;
+    double max_von_mises;
+    double avg_von_mises;
+    double high_stress_area_ratio;
+    json result;
+    std::chrono::system_clock::time_point created_at;
+};
+
+struct PenetrationPrediction {
+    int64_t id;
+    int crack_id;
+    int material_id;
+    std::string method;
+    json parameters;
+    double target_depth_um;
+    double viscosity_pa_s;
+    double surface_tension_n_m;
+    double contact_angle_deg;
+    double crack_width_um;
+    double predicted_time_s;
+    double penetration_rate_um_s;
+    std::vector<double> time_series;
+    std::vector<double> depth_series;
+    json result;
+    std::chrono::system_clock::time_point created_at;
+};
+
+struct BendingTestResult {
+    int64_t id;
+    int porcelain_id;
+    int crack_id;
+    int material_id;
+    std::string method;
+    json parameters;
+    double original_strength_mpa;
+    double unrepaired_strength_mpa;
+    double repaired_strength_mpa;
+    double strength_recovery_ratio;
+    double youngs_modulus_gpa;
+    double fracture_toughness_mpa_m05;
+    std::vector<double> load_displacement_load;
+    std::vector<double> load_displacement_disp;
+    json stress_distribution;
+    json result;
+    std::chrono::system_clock::time_point created_at;
+};
+
+struct VirtualRepairResult {
+    int porcelain_id;
+    int crack_id;
+    std::vector<int> repaired_point_indices;
+    double repair_radius;
+    double estimated_closure_ratio;
+    json animation_data;
+};
+
+struct StressAnalysisMessage {
+    int porcelain_id;
+    std::vector<CrackInfo> cracks;
+    StressAnalysisResult result;
+};
+
+struct PenetrationMessage {
+    CrackInfo crack;
+    RepairMaterial material;
+    PenetrationPrediction prediction;
+};
+
+struct BendingTestMessage {
+    int porcelain_id;
+    CrackInfo crack;
+    RepairMaterial material;
+    BendingTestResult result;
+};
+
+inline void to_json(json& j, const StressTensor& s) {
+    j = json{
+        {"sigma_xx", s.sigma_xx},
+        {"sigma_yy", s.sigma_yy},
+        {"sigma_zz", s.sigma_zz},
+        {"tau_xy", s.tau_xy},
+        {"tau_yz", s.tau_yz},
+        {"tau_zx", s.tau_zx},
+        {"von_mises", s.von_mises}
+    };
+}
+
+inline void from_json(const json& j, StressTensor& s) {
+    j.at("sigma_xx").get_to(s.sigma_xx);
+    j.at("sigma_yy").get_to(s.sigma_yy);
+    j.at("sigma_zz").get_to(s.sigma_zz);
+    j.at("tau_xy").get_to(s.tau_xy);
+    j.at("tau_yz").get_to(s.tau_yz);
+    j.at("tau_zx").get_to(s.tau_zx);
+    j.at("von_mises").get_to(s.von_mises);
+}
+
+inline void to_json(json& j, const StressGridPoint& p) {
+    j = json{
+        {"x", p.x}, {"y", p.y}, {"z", p.z},
+        {"stress", p.stress},
+        {"crack_density", p.crack_density},
+        {"principal_direction", p.principal_direction}
+    };
+}
+
 }
