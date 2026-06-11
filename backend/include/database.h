@@ -89,6 +89,24 @@ public:
                              uint16_t frame_id,
                              const std::vector<uint8_t>& payload);
 
+    int64_t insert_stress_analysis(const StressAnalysisResult& result);
+    bool insert_stress_grid_points(int64_t analysis_id,
+                                    const std::vector<StressGridPoint>& points);
+    StressAnalysisResult get_latest_stress_analysis(int porcelain_id);
+    std::vector<StressAnalysisResult> get_stress_analysis_history(int porcelain_id, int limit = 10);
+
+    int64_t insert_penetration_prediction(const PenetrationPrediction& prediction);
+    std::vector<PenetrationPrediction> get_penetration_predictions(int crack_id);
+
+    int64_t insert_bending_test_result(const BendingTestResult& result);
+    std::vector<BendingTestResult> get_bending_test_results(int porcelain_id, int crack_id = 0);
+
+    int64_t insert_virtual_repair_record(int porcelain_id, int crack_id,
+                                          const json& repaired_region,
+                                          double repair_radius,
+                                          double closure_ratio,
+                                          const json& animation_data);
+
 private:
     DatabaseManager() = default;
     ~DatabaseManager() = default;
