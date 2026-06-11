@@ -91,3 +91,94 @@ install(DIRECTORY frontend/
 install(FILES database/init.sql
     DESTINATION share/porcelain_monitor/database
 )
+
+include_directories(
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+set(TEST_SOURCES
+    tests/test_stress_analysis.cpp
+    backend/algorithms/stress_analysis.cpp
+)
+
+add_executable(test_stress_analysis ${TEST_SOURCES})
+
+target_link_libraries(test_stress_analysis
+    ${Boost_LIBRARIES}
+)
+
+if(WIN32)
+    target_link_libraries(test_stress_analysis
+        ws2_32
+        mswsock
+    )
+endif()
+
+set(WASHBURN_TEST_SOURCES
+    tests/test_washburn_model.cpp
+    backend/algorithms/washburn_model.cpp
+)
+
+add_executable(test_washburn_model ${WASHBURN_TEST_SOURCES})
+
+target_link_libraries(test_washburn_model
+    ${Boost_LIBRARIES}
+)
+
+if(WIN32)
+    target_link_libraries(test_washburn_model
+        ws2_32
+        mswsock
+    )
+endif()
+
+set(FOUR_POINT_BENDING_TEST_SOURCES
+    tests/test_four_point_bending.cpp
+    backend/algorithms/four_point_bending.cpp
+)
+
+add_executable(test_four_point_bending ${FOUR_POINT_BENDING_TEST_SOURCES})
+
+target_link_libraries(test_four_point_bending
+    ${Boost_LIBRARIES}
+)
+
+if(WIN32)
+    target_link_libraries(test_four_point_bending
+        ws2_32
+        mswsock
+    )
+endif()
+
+set(ALL_TEST_SOURCES
+    tests/test_main.cpp
+    tests/test_stress_analysis.cpp
+    tests/test_washburn_model.cpp
+    tests/test_four_point_bending.cpp
+    backend/algorithms/stress_analysis.cpp
+    backend/algorithms/washburn_model.cpp
+    backend/algorithms/four_point_bending.cpp
+    backend/algorithms/crack_propagation.cpp
+)
+
+add_executable(porcelain_tests ${ALL_TEST_SOURCES})
+
+target_link_libraries(porcelain_tests
+    ${Boost_LIBRARIES}
+)
+
+if(WIN32)
+    target_link_libraries(porcelain_tests
+        ws2_32
+        mswsock
+    )
+endif()
+
+enable_testing()
+add_test(NAME AllTests COMMAND porcelain_tests)
+add_test(NAME StressAnalysisTests COMMAND porcelain_tests --suite StressFEMTests)
+add_test(NAME WashburnModelTests COMMAND porcelain_tests --suite WashburnModelTests)
+add_test(NAME FourPointBendingTests COMMAND porcelain_tests --suite BendingTestTests)
+add_test(NAME StressAcceptance COMMAND porcelain_tests --suite StressFEMTests --test Acceptance)
+add_test(NAME WashburnAcceptance COMMAND porcelain_tests --suite WashburnModelTests --test Acceptance)
+add_test(NAME BendingAcceptance COMMAND porcelain_tests --suite BendingTestTests --test Acceptance)
