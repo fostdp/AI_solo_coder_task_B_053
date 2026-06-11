@@ -1,0 +1,42 @@
+{
+  "database": {
+    "host": "localhost",
+    "port": 5432,
+    "name": "porcelain_monitor",
+    "user": "postgres",
+    "password": "postgres",
+    "pool_size": 10
+  },
+  "server": {
+    "profinet_port": 34964,
+    "http_port": 8080,
+    "websocket_port": 8081,
+    "bind_address": "0.0.0.0",
+    "thread_pool_size": 8
+  },
+  "alerts": {
+    "depth_threshold": 200.0,
+    "width_threshold": 50.0,
+    "sms_enabled": true,
+    "websocket_enabled": true,
+    "sms_gateway_url": "http://sms-gateway.example.com/send",
+    "alert_phone_number": "+8613800138000"
+  },
+  "algorithms": {
+    "paris_law": {
+      "default_C": 1.5e-10,
+      "default_m": 3.0,
+      "stress_ratio": 0.1,
+      "prediction_horizon_hours": 720
+    },
+    "dem": {
+      "particle_radius_nm": 25.0,
+      "youngs_modulus": 70000000000.0,
+      "poissons_ratio": 0.22,
+      "density": 3950.0,
+      "max_particles": 10000,
+      "simulation_steps": 1000,
+      "time_step": 1e-9
+    }
+  }
+}
