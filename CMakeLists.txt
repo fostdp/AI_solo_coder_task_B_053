@@ -34,11 +34,15 @@ set(BACKEND_SOURCES
     backend/src/profinet_parser.cpp
     backend/src/tcp_server.cpp
     backend/src/database.cpp
+    backend/src/database_extensions.cpp
     backend/src/alert_manager.cpp
     backend/src/websocket_server.cpp
     backend/src/http_server.cpp
     backend/algorithms/crack_propagation.cpp
     backend/algorithms/dem_simulation.cpp
+    backend/algorithms/stress_analysis.cpp
+    backend/algorithms/washburn_model.cpp
+    backend/algorithms/four_point_bending.cpp
 )
 
 add_executable(porcelain_monitor ${BACKEND_SOURCES})
