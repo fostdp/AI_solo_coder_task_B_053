@@ -73,6 +73,32 @@ struct AlertConfig {
     }
 };
 
+struct StressFEMConfig {
+    int grid_resolution = 50;
+    double youngs_modulus_gpa = 70.0;
+    double poissons_ratio = 0.22;
+    double crack_density_sensitivity = 50.0;
+    double max_stress_mpa = 300.0;
+};
+
+struct WashburnConfig {
+    double default_surface_tension_n_m = 0.072;
+    double default_contact_angle_deg = 30.0;
+    double tortuosity_factor = 1.5;
+    double surface_roughness_factor = 1.2;
+    int time_series_points = 100;
+};
+
+struct BendingTestConfig {
+    double support_span_mm = 40.0;
+    double loading_span_mm = 20.0;
+    double specimen_width_mm = 10.0;
+    double specimen_thickness_mm = 5.0;
+    double porcelain_strength_mpa = 120.0;
+    double repair_interface_strength_ratio = 0.85;
+    int load_steps = 50;
+};
+
 struct AlgorithmConfig {
     struct ParisLaw {
         double default_C = 1.5e-10;
@@ -90,6 +116,10 @@ struct AlgorithmConfig {
         int simulation_steps = 1000;
         double time_step = 1e-9;
     } dem;
+
+    StressFEMConfig stress_fem;
+    WashburnConfig washburn;
+    BendingTestConfig bending_test;
 };
 
 struct Config {
