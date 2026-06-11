@@ -8,6 +8,11 @@ class PorcelainMonitorApp {
         this.porcelains = [];
         this.charts = {};
         this.selectedCrackId = null;
+        this.stressHeatmapVisible = false;
+        this.repairToolEnabled = false;
+        this.currentStressData = null;
+        this.currentPenetrationData = null;
+        this.currentBendingData = null;
 
         this.init();
     }
@@ -54,6 +59,31 @@ class PorcelainMonitorApp {
             this.loadCracksData(this.currentPorcelain.id);
         } else if (tabName === 'alerts') {
             this.loadAlerts();
+        } else if (tabName === 'stress' && this.currentPorcelain && !this.currentStressData) {
+            this.loadExistingStressData();
+        } else if (tabName === 'virtual-repair') {
+            this.initRepairToolIfNeeded();
+        }
+    }
+
+    async loadExistingStressData() {
+        try {
+            const result = await this.api.getStressAnalysis(this.currentPorcelain.id);
+            this.currentStressData = result.data || result;
+            if (this.currentStressData && this.currentStressData.grid_points) {
+                this.viewer.updateStressHeatmap(this.currentStressData.grid_points);
+                this.renderStressResults(this.currentStressData);
+                this.showToast('已加载历史应力分析数据', 'success');
+            }
+        } catch (error) {
+            console.log('暂无历史应力分析数据');
+        }
+    }
+
+    initRepairToolIfNeeded() {
+        if (!this.viewer.repairTool) {
+            this.viewer.initRepairTool();
+            this.showToast('虚拟修复工具已初始化', 'info');
         }
     }
 
@@ -102,6 +132,46 @@ class PorcelainMonitorApp {
 
         document.getElementById('alert-type-filter').addEventListener('change', () => {
             this.loadAlerts();
+        });
+
+        document.getElementById('run-stress-analysis').addEventListener('click', () => {
+            this.runStressAnalysis();
+        });
+
+        document.getElementById('toggle-heatmap').addEventListener('click', () => {
+            this.toggleStressHeatmap();
+        });
+
+        document.getElementById('stress-component').addEventListener('change', () => {
+            this.onStressComponentChange();
+        });
+
+        document.getElementById('run-penetration').addEventListener('click', () => {
+            this.runPenetrationPrediction();
+        });
+
+        document.getElementById('run-bending').addEventListener('click', () => {
+            this.runBendingTest();
+        });
+
+        document.getElementById('enable-paint').addEventListener('click', () => {
+            this.enableRepairTool();
+        });
+
+        document.getElementById('disable-paint').addEventListener('click', () => {
+            this.disableRepairTool();
+        });
+
+        document.getElementById('repair-radius').addEventListener('input', (e) => {
+            this.onRepairRadiusChange(e);
+        });
+
+        document.getElementById('clear-repair').addEventListener('click', () => {
+            this.clearRepairMarks();
+        });
+
+        document.getElementById('save-repair-record').addEventListener('click', () => {
+            this.saveVirtualRepairRecord();
         });
     }
 
@@ -246,6 +316,8 @@ class PorcelainMonitorApp {
     updateCrackSelects(cracks) {
         const predictionSelect = document.getElementById('prediction-crack-select');
         const repairSelect = document.getElementById('repair-crack-select');
+        const penetrationSelect = document.getElementById('penetration-crack-select');
+        const bendingSelect = document.getElementById('bending-crack-select');
 
         const createOptions = () => {
             let html = '<option value="">请选择裂纹</option>';
@@ -257,6 +329,8 @@ class PorcelainMonitorApp {
 
         predictionSelect.innerHTML = createOptions();
         repairSelect.innerHTML = createOptions();
+        penetrationSelect.innerHTML = createOptions();
+        bendingSelect.innerHTML = createOptions();
     }
 
     async loadCracksData(porcelainId) {
@@ -709,6 +783,374 @@ class PorcelainMonitorApp {
         return scores[materialId] || scores[1];
     }
 
+    async runStressAnalysis() {
+        if (!this.currentPorcelain) {
+            this.showToast('请先选择瓷器', 'warning');
+            return;
+        }
+
+        try {
+            this.showToast('应力计算中...', 'info');
+            const result = await this.api.runStressAnalysis(this.currentPorcelain.id);
+            const stressData = result.data || result;
+            this.currentStressData = stressData;
+            this.viewer.updateStressHeatmap(stressData.grid_points);
+            this.renderStressResults(stressData);
+            this.showToast('应力分析完成', 'success');
+        } catch (error) {
+            console.error('应力分析失败:', error);
+            const mockResult = this.generateMockStressAnalysis(this.currentPorcelain.id);
+            this.currentStressData = mockResult;
+            this.viewer.updateStressHeatmap(mockResult.grid_points);
+            this.renderStressResults(mockResult);
+        }
+    }
+
+    renderStressResults(result) {
+        document.getElementById('max-von-mises').textContent = (result.max_von_mises || 0).toFixed(1);
+        document.getElementById('avg-von-mises').textContent = (result.avg_von_mises || 0).toFixed(1);
+        document.getElementById('high-stress-ratio').textContent = `${((result.high_stress_area_ratio || 0) * 100).toFixed(1)}%`;
+    }
+
+    toggleStressHeatmap() {
+        const visible = this.viewer.toggleStressHeatmap();
+        this.stressHeatmapVisible = visible;
+        const btn = document.getElementById('toggle-heatmap');
+        btn.textContent = visible ? '隐藏热力图' : '显示热力图';
+        this.showToast(visible ? '应力热力图已显示' : '应力热力图已隐藏', 'info');
+    }
+
+    onStressComponentChange() {
+        this.showToast('应力分量切换功能开发中', 'info');
+    }
+
+    async runPenetrationPrediction() {
+        const crackId = document.getElementById('penetration-crack-select').value;
+        const materialId = document.getElementById('penetration-material-select').value;
+        const targetDepthUm = parseInt(document.getElementById('target-depth').value) || 100;
+
+        if (!crackId) {
+            this.showToast('请先选择裂纹', 'warning');
+            return;
+        }
+
+        try {
+            this.showToast('正在计算渗透预测...', 'info');
+            const result = await this.api.predictPenetration(crackId, materialId, targetDepthUm);
+            const prediction = result.data || result;
+            this.currentPenetrationData = prediction;
+            this.renderPenetrationResults(prediction);
+            this.renderPenetrationCharts(prediction);
+            this.renderMaterialComparison(prediction);
+            this.showToast('渗透预测完成', 'success');
+        } catch (error) {
+            console.error('渗透预测失败:', error);
+            const mockResult = this.generateMockPenetration(parseInt(crackId), parseInt(materialId), targetDepthUm);
+            this.currentPenetrationData = mockResult;
+            this.renderPenetrationResults(mockResult);
+            this.renderPenetrationCharts(mockResult);
+            this.renderMaterialComparison(mockResult);
+        }
+    }
+
+    renderPenetrationResults(prediction) {
+        document.getElementById('penetration-time').textContent = (prediction.predicted_time_s || 0).toFixed(1);
+        document.getElementById('initial-rate').textContent = (prediction.penetration_rate_um_s || 0).toFixed(2);
+        document.getElementById('capillary-pressure').textContent = (prediction.capillary_pressure || 0).toFixed(3);
+    }
+
+    renderPenetrationCharts(prediction) {
+        const depthTimeCtx = document.getElementById('depth-time-chart').getContext('2d');
+        const rateDepthCtx = document.getElementById('rate-depth-chart').getContext('2d');
+
+        if (this.charts.depthTime) this.charts.depthTime.destroy();
+        if (this.charts.rateDepth) this.charts.rateDepth.destroy();
+
+        const timeSeries = prediction.time_series || this.generatePenetrationTimeSeries(60);
+        const depthSeries = prediction.depth_series || this.generatePenetrationDepthSeries(timeSeries, prediction.predicted_time_s || 60);
+        const rateSeries = prediction.rate_series || this.generatePenetrationRateSeries(depthSeries);
+
+        const commonOptions = {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: { grid: { color: 'rgba(79, 209, 197, 0.1)' }, ticks: { color: '#a0aec0' } },
+                y: { grid: { color: 'rgba(79, 209, 197, 0.1)' }, ticks: { color: '#a0aec0' } }
+            },
+            plugins: { legend: { display: true, labels: { color: '#e6e6e6' } } }
+        };
+
+        this.charts.depthTime = new Chart(depthTimeCtx, {
+            type: 'line',
+            data: {
+                labels: timeSeries.map(t => t.toFixed(0)),
+                datasets: [{
+                    label: '渗透深度 (μm)',
+                    data: depthSeries,
+                    borderColor: '#4fd1c5',
+                    backgroundColor: 'rgba(79, 209, 197, 0.1)',
+                    fill: true,
+                    tension: 0.4
+                }]
+            },
+            options: { ...commonOptions, plugins: { ...commonOptions.plugins, legend: { display: true, labels: { color: '#e6e6e6' } } } }
+        });
+
+        this.charts.rateDepth = new Chart(rateDepthCtx, {
+            type: 'line',
+            data: {
+                labels: depthSeries.map(d => d.toFixed(0)),
+                datasets: [{
+                    label: '渗透速率 (μm/s)',
+                    data: rateSeries,
+                    borderColor: '#63b3ed',
+                    backgroundColor: 'rgba(99, 179, 237, 0.1)',
+                    fill: true,
+                    tension: 0.4
+                }]
+            },
+            options: { ...commonOptions, plugins: { ...commonOptions.plugins, legend: { display: true, labels: { color: '#e6e6e6' } } } }
+        });
+    }
+
+    renderMaterialComparison(prediction) {
+        const ctx = document.getElementById('material-compare-chart').getContext('2d');
+        if (this.charts.materialCompare) this.charts.materialCompare.destroy();
+
+        const currentMaterialId = parseInt(document.getElementById('penetration-material-select').value) || 1;
+        const materials = [
+            { id: 1, name: '纳米氧化锆' },
+            { id: 2, name: '纳米二氧化硅' },
+            { id: 3, name: '复合材料' }
+        ];
+
+        const times = materials.map(m => {
+            if (m.id === currentMaterialId) return prediction.predicted_time_s || 50;
+            return this.generateMockPenetration(1, m.id, 100).predicted_time_s;
+        });
+        const rates = materials.map(m => {
+            if (m.id === currentMaterialId) return prediction.penetration_rate_um_s || 2;
+            return this.generateMockPenetration(1, m.id, 100).penetration_rate_um_s;
+        });
+
+        this.charts.materialCompare = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: materials.map(m => m.name),
+                datasets: [
+                    {
+                        label: '渗透时间 (s)',
+                        data: times,
+                        backgroundColor: 'rgba(79, 209, 197, 0.6)',
+                        borderColor: '#4fd1c5',
+                        borderWidth: 1,
+                        yAxisID: 'y'
+                    },
+                    {
+                        label: '初始速率 (μm/s)',
+                        data: rates,
+                        backgroundColor: 'rgba(99, 179, 237, 0.6)',
+                        borderColor: '#63b3ed',
+                        borderWidth: 1,
+                        yAxisID: 'y1'
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: { grid: { color: 'rgba(79, 209, 197, 0.1)' }, ticks: { color: '#a0aec0' } },
+                    y: {
+                        type: 'linear',
+                        position: 'left',
+                        grid: { color: 'rgba(79, 209, 197, 0.1)' },
+                        ticks: { color: '#a0aec0' },
+                        title: { display: true, text: '渗透时间 (s)', color: '#e6e6e6' }
+                    },
+                    y1: {
+                        type: 'linear',
+                        position: 'right',
+                        grid: { display: false },
+                        ticks: { color: '#a0aec0' },
+                        title: { display: true, text: '初始速率 (μm/s)', color: '#e6e6e6' }
+                    }
+                },
+                plugins: { legend: { labels: { color: '#e6e6e6' } } }
+            }
+        });
+    }
+
+    async runBendingTest() {
+        const crackId = document.getElementById('bending-crack-select').value;
+        const materialId = document.getElementById('bending-material-select').value;
+
+        if (!crackId) {
+            this.showToast('请先选择裂纹', 'warning');
+            return;
+        }
+
+        try {
+            this.showToast('正在运行四点弯曲试验...', 'info');
+            const result = await this.api.runBendingTest(crackId, materialId, this.currentPorcelain?.id);
+            const bendingData = result.data || result;
+            this.currentBendingData = bendingData;
+            this.renderBendingResults(bendingData);
+            this.renderBendingChart(bendingData);
+            this.showToast('弯曲试验完成', 'success');
+        } catch (error) {
+            console.error('弯曲试验失败:', error);
+            const mockResult = this.generateMockBendingTest(parseInt(crackId), parseInt(materialId));
+            this.currentBendingData = mockResult;
+            this.renderBendingResults(mockResult);
+            this.renderBendingChart(mockResult);
+        }
+    }
+
+    renderBendingResults(result) {
+        document.getElementById('original-strength').textContent = (result.original_strength || 0).toFixed(1);
+        document.getElementById('unrepaired-strength').textContent = (result.unrepaired_strength || 0).toFixed(1);
+        document.getElementById('repaired-strength').textContent = (result.repaired_strength || 0).toFixed(1);
+        const recoveryRatio = ((result.strength_recovery_ratio || 0) * 100).toFixed(1);
+        document.getElementById('strength-recovery').textContent = `${recoveryRatio}%`;
+
+        const recoveryCard = document.getElementById('strength-recovery').closest('.result-card');
+        recoveryCard.className = 'result-card';
+        if (recoveryRatio >= 90) {
+            recoveryCard.style.borderLeft = '4px solid #48bb78';
+        } else if (recoveryRatio >= 70) {
+            recoveryCard.style.borderLeft = '4px solid #4fd1c5';
+        } else if (recoveryRatio >= 50) {
+            recoveryCard.style.borderLeft = '4px solid #ecc94b';
+        } else if (recoveryRatio >= 30) {
+            recoveryCard.style.borderLeft = '4px solid #ed8936';
+        } else {
+            recoveryCard.classList.add('risk-high');
+        }
+    }
+
+    renderBendingChart(result) {
+        const ctx = document.getElementById('load-displacement-chart').getContext('2d');
+        if (this.charts.bending) this.charts.bending.destroy();
+
+        const displacement = result.displacement_points || this.generateDisplacementPoints(50);
+        const originalLoad = result.original_load_curve || this.generateLoadCurve(displacement, result.original_strength || 120);
+        const unrepairedLoad = result.unrepaired_load_curve || this.generateLoadCurve(displacement, result.unrepaired_strength || 60);
+        const repairedLoad = result.repaired_load_curve || this.generateLoadCurve(displacement, result.repaired_strength || 100);
+
+        this.charts.bending = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: displacement.map(d => d.toFixed(2)),
+                datasets: [
+                    {
+                        label: '原始试样',
+                        data: originalLoad,
+                        borderColor: '#48bb78',
+                        backgroundColor: 'rgba(72, 187, 120, 0.1)',
+                        fill: false,
+                        tension: 0.3
+                    },
+                    {
+                        label: '未修复',
+                        data: unrepairedLoad,
+                        borderColor: '#ef4444',
+                        backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                        fill: false,
+                        tension: 0.3
+                    },
+                    {
+                        label: '修复后',
+                        data: repairedLoad,
+                        borderColor: '#4fd1c5',
+                        backgroundColor: 'rgba(79, 209, 197, 0.1)',
+                        fill: false,
+                        tension: 0.3
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        grid: { color: 'rgba(79, 209, 197, 0.1)' },
+                        ticks: { color: '#a0aec0' },
+                        title: { display: true, text: '位移 (mm)', color: '#e6e6e6' }
+                    },
+                    y: {
+                        grid: { color: 'rgba(79, 209, 197, 0.1)' },
+                        ticks: { color: '#a0aec0' },
+                        title: { display: true, text: '载荷 (MPa)', color: '#e6e6e6' }
+                    }
+                },
+                plugins: { legend: { labels: { color: '#e6e6e6' } } }
+            }
+        });
+    }
+
+    enableRepairTool() {
+        this.initRepairToolIfNeeded();
+        this.viewer.enableRepairTool();
+        this.repairToolEnabled = true;
+        document.getElementById('enable-paint').disabled = true;
+        document.getElementById('disable-paint').disabled = false;
+        this.showToast('修复涂抹工具已启用', 'success');
+    }
+
+    disableRepairTool() {
+        this.viewer.disableRepairTool();
+        this.repairToolEnabled = false;
+        document.getElementById('enable-paint').disabled = false;
+        document.getElementById('disable-paint').disabled = true;
+        this.showToast('修复涂抹工具已禁用', 'info');
+    }
+
+    onRepairRadiusChange(e) {
+        const value = parseInt(e.target.value) || 5;
+        this.viewer.setRepairRadius(value);
+        document.getElementById('repair-radius-value').textContent = value;
+    }
+
+    clearRepairMarks() {
+        if (this.viewer.repairTool) {
+            this.viewer.repairTool.dispose();
+            this.viewer.repairTool = null;
+        }
+        this.viewer.initRepairTool();
+        if (this.currentCracks && this.currentCracks.length > 0) {
+            this.viewer.loadCracks(this.currentCracks);
+        }
+        document.getElementById('repair-progress-bar').style.width = '0%';
+        document.getElementById('repair-progress-text').textContent = '0%';
+        document.getElementById('repaired-cracks-body').innerHTML = '';
+        this.showToast('修复标记已清除', 'info');
+    }
+
+    saveVirtualRepairRecord() {
+        const progress = this.viewer.getRepairProgress();
+        const repairedIds = this.viewer.getRepairedCrackIds();
+        const tbody = document.getElementById('repaired-cracks-body');
+        tbody.innerHTML = '';
+
+        repairedIds.forEach(id => {
+            const crack = this.currentCracks.find(c => c.id === id);
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>#${id}</td>
+                <td>${((crack?.max_depth) || 0).toFixed(1)}</td>
+                <td>${(((crack?.max_depth) || 0) * 0.1).toFixed(1)}</td>
+                <td>${this.formatDate(new Date().toISOString())}</td>
+                <td><span class="status-badge status-repaired">已修复</span></td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        document.getElementById('repair-progress-bar').style.width = `${(progress * 100).toFixed(0)}%`;
+        document.getElementById('repair-progress-text').textContent = `${(progress * 100).toFixed(1)}%`;
+        this.showToast(`修复记录已保存，进度: ${(progress * 100).toFixed(1)}%`, 'success');
+    }
+
     async loadAlerts() {
         const typeFilter = document.getElementById('alert-type-filter').value;
 
@@ -1058,6 +1500,119 @@ class PorcelainMonitorApp {
         }
 
         return alerts;
+    }
+
+    generateMockStressAnalysis(porcelainId) {
+        const gridPoints = [];
+        const resolution = 20;
+
+        for (let i = 0; i < resolution; i++) {
+            for (let j = 0; j < resolution; j++) {
+                for (let k = 0; k < resolution; k++) {
+                    const t = (i + j + k) / (3 * resolution);
+                    const baseStress = 50 + t * 200;
+                    gridPoints.push({
+                        x: -10 + (i / (resolution - 1)) * 20,
+                        y: -5 + (j / (resolution - 1)) * 10,
+                        z: -10 + (k / (resolution - 1)) * 20,
+                        von_mises: baseStress + Math.random() * 30,
+                        sigma_xx: baseStress * 0.6 + Math.random() * 20,
+                        sigma_yy: baseStress * 0.4 + Math.random() * 15,
+                        sigma_zz: baseStress * 0.8 + Math.random() * 25
+                    });
+                }
+            }
+        }
+
+        const stresses = gridPoints.map(p => p.von_mises);
+        const maxVonMises = Math.max(...stresses);
+        const avgVonMises = stresses.reduce((a, b) => a + b, 0) / stresses.length;
+        const highStressCount = stresses.filter(s => s > 150).length;
+
+        return {
+            porcelain_id: porcelainId,
+            grid_points: gridPoints,
+            max_von_mises: maxVonMises,
+            avg_von_mises: avgVonMises,
+            high_stress_area_ratio: highStressCount / stresses.length
+        };
+    }
+
+    generateMockPenetration(crackId, materialId, targetDepthUm) {
+        const materialFactors = { 1: 1.0, 2: 0.8, 3: 0.9 };
+        const factor = materialFactors[materialId] || 1.0;
+
+        const predictedTime = (30 + Math.random() * 60) * factor;
+        const initialRate = (targetDepthUm / predictedTime) * (1.5 + Math.random() * 0.5);
+
+        return {
+            crack_id: crackId,
+            material_id: materialId,
+            target_depth_um: targetDepthUm,
+            predicted_time_s: predictedTime,
+            penetration_rate_um_s: initialRate,
+            capillary_pressure: 0.5 + Math.random() * 1.5
+        };
+    }
+
+    generatePenetrationTimeSeries(duration) {
+        const series = [];
+        for (let t = 0; t <= duration; t += Math.max(1, Math.floor(duration / 30))) {
+            series.push(t);
+        }
+        return series;
+    }
+
+    generatePenetrationDepthSeries(timeSeries, predictedTime) {
+        const maxDepth = 100 + Math.random() * 50;
+        return timeSeries.map(t => {
+            const ratio = Math.min(t / predictedTime, 1.5);
+            return maxDepth * (1 - Math.exp(-ratio * 2));
+        });
+    }
+
+    generatePenetrationRateSeries(depthSeries) {
+        return depthSeries.map((d, i) => {
+            const baseRate = 5 + Math.random() * 3;
+            return baseRate * Math.exp(-i / depthSeries.length * 2);
+        });
+    }
+
+    generateMockBendingTest(crackId, materialId) {
+        const originalStrength = 100 + Math.random() * 40;
+        const unrepairedStrength = originalStrength * (0.3 + Math.random() * 0.2);
+        const repairFactors = { 1: 0.75, 2: 0.82, 3: 0.88 };
+        const repairFactor = repairFactors[materialId] || 0.8;
+        const repairedStrength = originalStrength * (repairFactor + Math.random() * 0.1);
+        const strengthRecoveryRatio = (repairedStrength - unrepairedStrength) / (originalStrength - unrepairedStrength);
+
+        return {
+            crack_id: crackId,
+            material_id: materialId,
+            original_strength: originalStrength,
+            unrepaired_strength: unrepairedStrength,
+            repaired_strength: repairedStrength,
+            strength_recovery_ratio: strengthRecoveryRatio
+        };
+    }
+
+    generateDisplacementPoints(count) {
+        const points = [];
+        for (let i = 0; i < count; i++) {
+            points.push((i / (count - 1)) * 2.5);
+        }
+        return points;
+    }
+
+    generateLoadCurve(displacement, maxStrength) {
+        return displacement.map(d => {
+            const ratio = d / 2.0;
+            if (ratio < 1) {
+                return maxStrength * ratio;
+            } else {
+                return maxStrength * Math.exp(-(ratio - 1) * 3);
+            }
+        });
     }
 }
 
