@@ -7,7 +7,9 @@ namespace porcelain_monitor {
 namespace algorithms {
 
 FourPointBendingTest::FourPointBendingTest()
-    : failure_load_n_(0.0) {
+    : failure_load_n_(0.0),
+      crack_influence_coeffs_{1.12, -0.23, 10.6, -21.7, 30.4},
+      interface_strength_ratio_(0.85) {
 }
 
 void FourPointBendingTest::set_config(const BendingTestConfig& config) {
@@ -22,12 +24,15 @@ double FourPointBendingTest::moment_of_inertia() const {
 
 double FourPointBendingTest::crack_influence_factor(double crack_depth, double specimen_thickness) const {
     if (crack_depth <= 0.0 || specimen_thickness <= 0.0) return 1.0;
+    if (crack_influence_coeffs_.size() < 5) return 1.0;
     double a_over_h = crack_depth / specimen_thickness;
     a_over_h = std::min(0.9, std::max(0.0, a_over_h));
 
-    double f = 1.12 - 0.23 * a_over_h + 10.6 * a_over_h * a_over_h
-             - 21.7 * a_over_h * a_over_h * a_over_h
-             + 30.4 * a_over_h * a_over_h * a_over_h * a_over_h;
+    double f = crack_influence_coeffs_[0]
+             + crack_influence_coeffs_[1] * a_over_h
+             + crack_influence_coeffs_[2] * a_over_h * a_over_h
+             + crack_influence_coeffs_[3] * a_over_h * a_over_h * a_over_h
+             + crack_influence_coeffs_[4] * a_over_h * a_over_h * a_over_h * a_over_h;
     return f;
 }
 
@@ -440,6 +445,287 @@ json FourPointBendingTest::result_to_json(const BendingTestResult& result) const
     j["load_displacement_disp"] = result.load_displacement_disp;
     j["stress_distribution"] = result.stress_distribution;
     j["result"] = result.result;
+    return j;
+}
+
+double FourPointBendingTest::crack_influence_factor(double crack_depth, double specimen_thickness,
+                                                     const std::vector<double>& poly_coeffs) const {
+    if (crack_depth <= 0.0 || specimen_thickness <= 0.0 || poly_coeffs.empty()) return 1.0;
+    double a_over_h = crack_depth / specimen_thickness;
+    a_over_h = std::min(0.9, std::max(0.0, a_over_h));
+
+    double f = 0.0;
+    double a_pow = 1.0;
+    for (size_t i = 0; i < poly_coeffs.size(); ++i) {
+        f += poly_coeffs[i] * a_pow;
+        a_pow *= a_over_h;
+    }
+    return f;
+}
+
+double FourPointBendingTest::predict_strength_recovery(const CalibrationDataset& data,
+                                                       const CrackInfo& crack,
+                                                       const RepairMaterial& material,
+                                                       const std::vector<double>& params,
+                                                       bool repaired) const {
+    double h = config_.specimen_thickness_mm * 1e-3;
+    double strength_pa = config_.porcelain_strength_mpa * 1e6;
+
+    double a_crack = (crack.max_depth > 0) ? crack.max_depth * 1e-3 : 1e-9;
+
+    std::vector<double> poly_coeffs(params.begin(), params.end() - 1);
+    double interface_ratio = params.back();
+
+    double f = crack_influence_factor(a_crack, h, poly_coeffs);
+    double sigma_eff_factor = std::sqrt(M_PI * std::max(a_crack, 1e-9)) * f;
+    double unrepaired_strength_pa = strength_pa / std::max(sigma_eff_factor, 1.0);
+
+    double repaired_strength_pa = unrepaired_strength_pa;
+    if (repaired) {
+        double bonding_strength = 0.0;
+        try {
+            if (material.properties.contains("bonding_strength")) {
+                bonding_strength = material.properties["bonding_strength"].get<double>();
+            }
+        } catch (...) {
+            bonding_strength = 0.0;
+        }
+
+        double crack_depth_ratio = std::min(1.0, a_crack / h);
+        repaired_strength_pa = strength_pa * (1.0 - crack_depth_ratio)
+            + bonding_strength * 1e6 * crack_depth_ratio * interface_ratio;
+    }
+
+    if (config_.porcelain_strength_mpa > 0.0) {
+        return repaired_strength_pa / (strength_pa);
+    }
+    return 0.0;
+}
+
+double FourPointBendingTest::compute_mse(const std::vector<CalibrationDataset>& datasets,
+                                         const CrackInfo& crack,
+                                         const RepairMaterial& material,
+                                         const std::vector<double>& params,
+                                         bool repaired) const {
+    if (datasets.empty()) return 0.0;
+
+    double mse = 0.0;
+    for (const auto& data : datasets) {
+        double predicted = predict_strength_recovery(data, crack, material, params, repaired);
+        double error = predicted - data.measured_value;
+        if (data.measurement_std) {
+            double weight = 1.0 / ((*data.measurement_std) * (*data.measurement_std));
+            mse += weight * error * error;
+        } else {
+            mse += error * error;
+        }
+    }
+    return mse / datasets.size();
+}
+
+double FourPointBendingTest::compute_r_squared(const std::vector<CalibrationDataset>& datasets,
+                                               const CrackInfo& crack,
+                                               const RepairMaterial& material,
+                                               const std::vector<double>& params,
+                                               bool repaired) const {
+    if (datasets.empty()) return 0.0;
+
+    double mean_measured = 0.0;
+    for (const auto& data : datasets) {
+        mean_measured += data.measured_value;
+    }
+    mean_measured /= datasets.size();
+
+    double ss_tot = 0.0;
+    double ss_res = 0.0;
+    for (const auto& data : datasets) {
+        double predicted = predict_strength_recovery(data, crack, material, params, repaired);
+        ss_res += (predicted - data.measured_value) * (predicted - data.measured_value);
+        ss_tot += (data.measured_value - mean_measured) * (data.measured_value - mean_measured);
+    }
+
+    if (ss_tot < 1e-12) return 1.0;
+    return 1.0 - ss_res / ss_tot;
+}
+
+double FourPointBendingTest::evaluate_model_mse(const std::vector<double>& params,
+                                                const std::vector<CalibrationDataset>& dataset) const {
+    if (dataset.empty() || params.size() < 6) return 0.0;
+
+    double mse = 0.0;
+    for (const auto& data : dataset) {
+        CrackInfo crack;
+        crack.id = data.crack_id;
+        crack.porcelain_id = data.porcelain_id;
+        crack.max_depth = data.input_features.empty() ? 0.0 : data.input_features[0];
+
+        RepairMaterial material;
+        material.id = data.material_id;
+
+        double predicted = predict_strength_recovery(data, crack, material, params, true);
+        double error = predicted - data.measured_value;
+
+        if (data.measurement_std && *data.measurement_std > 1e-12) {
+            double weight = 1.0 / ((*data.measurement_std) * (*data.measurement_std));
+            mse += weight * error * error;
+        } else {
+            mse += error * error;
+        }
+    }
+    return mse / dataset.size();
+}
+
+void FourPointBendingTest::update_model_params(const std::vector<double>& params) {
+    if (params.size() < 6) return;
+
+    for (size_t i = 0; i < 5; ++i) {
+        if (i < crack_influence_coeffs_.size()) {
+            crack_influence_coeffs_[i] = params[i];
+        } else {
+            crack_influence_coeffs_.push_back(params[i]);
+        }
+    }
+    interface_strength_ratio_ = params[5];
+    config_.repair_interface_strength_ratio = params[5];
+}
+
+double FourPointBendingTest::compute_r2(const std::vector<double>& predictions,
+                                        const std::vector<double>& measurements) const {
+    if (predictions.empty() || measurements.empty() || predictions.size() != measurements.size()) {
+        return 0.0;
+    }
+
+    double mean_measured = 0.0;
+    for (double m : measurements) {
+        mean_measured += m;
+    }
+    mean_measured /= measurements.size();
+
+    double ss_res = 0.0;
+    double ss_tot = 0.0;
+    for (size_t i = 0; i < predictions.size(); ++i) {
+        ss_res += (predictions[i] - measurements[i]) * (predictions[i] - measurements[i]);
+        ss_tot += (measurements[i] - mean_measured) * (measurements[i] - mean_measured);
+    }
+
+    if (ss_tot < 1e-12) return 1.0;
+    return 1.0 - ss_res / ss_tot;
+}
+
+FourPointBendingTest::CalibrationResult FourPointBendingTest::calibrate_model(
+    const std::vector<CalibrationDataset>& dataset,
+    bool update_internal_params) {
+
+    CalibrationResult result;
+    result.iterations = 0;
+
+    if (dataset.empty()) {
+        result.optimal_params = {1.12, -0.23, 10.6, -21.7, 30.4, 0.85};
+        result.initial_mse = 0.0;
+        result.final_mse = 0.0;
+        result.initial_r2 = 0.0;
+        result.final_r2 = 0.0;
+        return result;
+    }
+
+    std::vector<ParameterBounds> bounds = {
+        {"c0_const", 0.5, 2.0, 1.12},
+        {"c1_linear", -1.0, 0.5, -0.23},
+        {"c2_quad", 0.0, 30.0, 10.6},
+        {"c3_cubic", -50.0, 0.0, -21.7},
+        {"c4_quartic", 0.0, 60.0, 30.4},
+        {"interface_strength_ratio", 0.5, 1.0, 0.85}
+    };
+
+    std::vector<double> default_params;
+    for (const auto& b : bounds) {
+        default_params.push_back(b.default_value);
+    }
+
+    result.initial_mse = evaluate_model_mse(default_params, dataset);
+
+    std::vector<double> default_predictions;
+    std::vector<double> measurements;
+    for (const auto& data : dataset) {
+        CrackInfo crack;
+        crack.id = data.crack_id;
+        crack.porcelain_id = data.porcelain_id;
+        crack.max_depth = data.input_features.empty() ? 0.0 : data.input_features[0];
+        RepairMaterial material;
+        material.id = data.material_id;
+        default_predictions.push_back(predict_strength_recovery(data, crack, material, default_params, true));
+        measurements.push_back(data.measured_value);
+    }
+    result.initial_r2 = compute_r2(default_predictions, measurements);
+
+    if (config_.enable_bayesian_calibration) {
+        BayesianOptimizerConfig opt_config;
+        opt_config.max_iter = config_.calibration_max_iter;
+        opt_config.n_init = config_.calibration_initial_samples;
+        opt_config.grid_search_points = 1000;
+        opt_config.xi = config_.calibration_exploration_weight;
+        opt_config.random_seed = 42;
+
+        GPHyperparameters gp_params;
+        gp_params.sigma_n = config_.calibration_noise_std;
+
+        BayesianOptimizer optimizer(
+            bounds,
+            [this, &dataset](const std::vector<double>& params) {
+                return evaluate_model_mse(params, dataset);
+            },
+            opt_config
+        );
+
+        OptimizationResult opt_result = optimizer.optimize();
+
+        result.optimal_params = opt_result.best_params;
+        result.final_mse = opt_result.best_objective;
+        result.iterations = opt_result.iterations;
+
+        for (const auto& val : opt_result.sample_values) {
+            result.mse_history.push_back(val);
+        }
+        for (const auto& sample : opt_result.sample_points) {
+            for (double p : sample) {
+                result.param_history.push_back(p);
+            }
+        }
+    } else {
+        result.optimal_params = default_params;
+        result.final_mse = result.initial_mse;
+        result.iterations = 0;
+    }
+
+    std::vector<double> final_predictions;
+    for (const auto& data : dataset) {
+        CrackInfo crack;
+        crack.id = data.crack_id;
+        crack.porcelain_id = data.porcelain_id;
+        crack.max_depth = data.input_features.empty() ? 0.0 : data.input_features[0];
+        RepairMaterial material;
+        material.id = data.material_id;
+        final_predictions.push_back(predict_strength_recovery(data, crack, material, result.optimal_params, true));
+    }
+    result.final_r2 = compute_r2(final_predictions, measurements);
+
+    if (update_internal_params) {
+        update_model_params(result.optimal_params);
+    }
+
+    return result;
+}
+
+json FourPointBendingTest::CalibrationResult::to_json() const {
+    json j;
+    j["optimal_params"] = optimal_params;
+    j["initial_mse"] = initial_mse;
+    j["final_mse"] = final_mse;
+    j["initial_r2"] = initial_r2;
+    j["final_r2"] = final_r2;
+    j["iterations"] = iterations;
+    j["param_history"] = param_history;
+    j["mse_history"] = mse_history;
     return j;
 }
 
