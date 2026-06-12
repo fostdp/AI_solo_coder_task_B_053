@@ -12,6 +12,71 @@ void WashburnPenetrationModel::set_config(const WashburnConfig& config) {
     config_ = config;
 }
 
+void WashburnPenetrationModel::set_wall_roughness(double ra_um) {
+    if (ra_um > 0.0) {
+        config_.wall_roughness_ra_um = ra_um;
+    }
+}
+
+double WashburnPenetrationModel::get_roughness_factor(double ra_um) const {
+    if (ra_um <= 0.0) return 1.0;
+
+    double lambda = 5.0;
+    if (lambda < 1e-12) return 1.0;
+
+    double r_s = 1.0 + (2.0 * M_PI * ra_um * ra_um) / (lambda * lambda);
+
+    r_s = std::max(config_.min_roughness_factor, std::min(config_.max_roughness_factor, r_s));
+
+    return r_s;
+}
+
+double WashburnPenetrationModel::wenzel_contact_angle(double theta_0_deg, double r_s) const {
+    if (r_s <= 0.0) return theta_0_deg;
+
+    double theta_0_rad = theta_0_deg * M_PI / 180.0;
+    double cos_theta_0 = std::cos(theta_0_rad);
+    double cos_theta_w = r_s * cos_theta_0;
+
+    cos_theta_w = std::max(-1.0, std::min(1.0, cos_theta_w));
+
+    double theta_w_rad = std::acos(cos_theta_w);
+    double theta_w_deg = theta_w_rad * 180.0 / M_PI;
+
+    return theta_w_deg;
+}
+
+double WashburnPenetrationModel::roughness_tortuosity(double ra_um) const {
+    if (ra_um <= 0.0) return config_.tortuosity_factor;
+
+    double tau_eff = config_.tortuosity_factor * (1.0 + config_.roughness_tortuosity_coeff * ra_um);
+
+    return tau_eff;
+}
+
+double WashburnPenetrationModel::roughness_effective_radius(double base_r, double ra_um) const {
+    if (base_r <= 0.0) return 0.0;
+    if (ra_um <= 0.0) return base_r;
+
+    double r_eff = base_r * std::exp(-config_.roughness_radius_coeff * ra_um);
+
+    return r_eff;
+}
+
+double WashburnPenetrationModel::dynamic_viscosity_correction(double viscosity, double shear_rate) const {
+    if (viscosity <= 0.0) return 0.0;
+    if (shear_rate <= 0.0) return viscosity;
+
+    const double gamma_c = 1.0;
+    const double n = 0.5;
+    const double m = 0.3;
+
+    double ratio = shear_rate / gamma_c;
+    double factor = std::pow(1.0 + std::pow(ratio, n), -m);
+
+    return viscosity * factor;
+}
+
 double WashburnPenetrationModel::effective_radius(double crack_width_um) const {
     double crack_width_m = crack_width_um * 1e-6;
     double r_parallel_plate = crack_width_m / 4.0;
@@ -33,14 +98,29 @@ double WashburnPenetrationModel::penetration_depth_at_time(double time_s,
                                                            double surface_tension_n_m,
                                                            double contact_angle_deg) const {
     if (time_s <= 0.0) return 0.0;
+    if (crack_width_um <= 0.0) return 0.0;
+    if (viscosity_pa_s <= 0.0) return 0.0;
+    if (surface_tension_n_m <= 0.0) return 0.0;
 
-    double r = effective_radius(crack_width_um);
-    double theta_rad = contact_angle_deg * M_PI / 180.0;
-    double tau = config_.tortuosity_factor;
+    double r_base = effective_radius(crack_width_um);
+    double theta_eff_deg = contact_angle_deg;
+    double tau_eff = config_.tortuosity_factor;
+    double r_eff = r_base;
+    double ra_um = config_.wall_roughness_ra_um;
 
+    if (config_.wenzel_roughness_correction && ra_um > 0.0) {
+        double r_s = get_roughness_factor(ra_um);
+        theta_eff_deg = wenzel_contact_angle(contact_angle_deg, r_s);
+        tau_eff = roughness_tortuosity(ra_um);
+        r_eff = roughness_effective_radius(r_base, ra_um);
+    }
+
+    if (r_eff < 1e-12) return 0.0;
+
+    double theta_rad = theta_eff_deg * M_PI / 180.0;
     double cos_theta = cos(theta_rad);
-    double capillary_term = surface_tension_n_m * cos_theta * r;
-    double viscous_term = 2.0 * viscosity_pa_s * tau;
+    double capillary_term = surface_tension_n_m * cos_theta * r_eff;
+    double viscous_term = 2.0 * viscosity_pa_s * tau_eff;
 
     if (viscous_term < 1e-20) return 0.0;
 
@@ -56,7 +136,7 @@ double WashburnPenetrationModel::penetration_depth_at_time(double time_s,
 
     double rho = 1000.0;
     double g = config_.gravity_m_s2;
-    double h_eq = (2.0 * surface_tension_n_m * cos_theta) / (rho * g * r);
+    double h_eq = (2.0 * surface_tension_n_m * cos_theta) / (rho * g * r_eff);
 
     if (h_eq < 1e-6) {
         return h_ideal_m * 1e6;
@@ -65,18 +145,21 @@ double WashburnPenetrationModel::penetration_depth_at_time(double time_s,
     double h = h_ideal_m;
     double dt = time_s / 200.0;
     double t = 0.0;
-    double h_prev = 0.0;
 
     while (t < time_s && h < h_eq * 0.999) {
-        double dh_dt_numerator = capillary_term - rho * g * r * r * h;
-        double dh_dt_denominator = 4.0 * viscosity_pa_s * tau * h;
+        double dh_dt_numerator = capillary_term - rho * g * r_eff * r_eff * h;
+        double dh_dt_denominator = 4.0 * viscosity_pa_s * tau_eff * h;
         if (dh_dt_denominator < 1e-20) break;
         if (dh_dt_numerator <= 0.0) break;
 
-        double dh_dt = dh_dt_numerator / dh_dt_denominator;
+        double dh_dt_ideal = dh_dt_numerator / dh_dt_denominator;
+        double shear_rate = dh_dt_ideal / r_eff;
+        double eta_eff = dynamic_viscosity_correction(viscosity_pa_s, shear_rate);
+        double eta_ratio = eta_eff / viscosity_pa_s;
+        double dh_dt = dh_dt_ideal / eta_ratio;
+
         double dh = dh_dt * dt;
 
-        h_prev = h;
         h += dh;
         t += dt;
 
@@ -92,16 +175,31 @@ double WashburnPenetrationModel::time_to_reach_depth(double target_depth_um,
                                                      double surface_tension_n_m,
                                                      double contact_angle_deg) const {
     if (target_depth_um <= 0.0) return 0.0;
+    if (crack_width_um <= 0.0) return 1e20;
+    if (viscosity_pa_s <= 0.0) return 1e20;
+    if (surface_tension_n_m <= 0.0) return 1e20;
 
-    double r = effective_radius(crack_width_um);
-    double theta_rad = contact_angle_deg * M_PI / 180.0;
-    double tau = config_.tortuosity_factor;
+    double r_base = effective_radius(crack_width_um);
+    double theta_eff_deg = contact_angle_deg;
+    double tau_eff = config_.tortuosity_factor;
+    double r_eff = r_base;
+    double ra_um = config_.wall_roughness_ra_um;
+
+    if (config_.wenzel_roughness_correction && ra_um > 0.0) {
+        double r_s = get_roughness_factor(ra_um);
+        theta_eff_deg = wenzel_contact_angle(contact_angle_deg, r_s);
+        tau_eff = roughness_tortuosity(ra_um);
+        r_eff = roughness_effective_radius(r_base, ra_um);
+    }
+
+    if (r_eff < 1e-12) return 1e20;
 
     double target_depth_m = target_depth_um * 1e-6;
+    double theta_rad = theta_eff_deg * M_PI / 180.0;
     double cos_theta = cos(theta_rad);
 
-    double numerator = 2.0 * viscosity_pa_s * tau * target_depth_m * target_depth_m;
-    double denominator = surface_tension_n_m * cos_theta * r;
+    double numerator = 2.0 * viscosity_pa_s * tau_eff * target_depth_m * target_depth_m;
+    double denominator = surface_tension_n_m * cos_theta * r_eff;
 
     if (denominator < 1e-20) return 1e20;
 
@@ -114,7 +212,7 @@ double WashburnPenetrationModel::time_to_reach_depth(double target_depth_um,
 
     double rho = 1000.0;
     double g = config_.gravity_m_s2;
-    double h_eq = (2.0 * surface_tension_n_m * cos_theta) / (rho * g * r);
+    double h_eq = (2.0 * surface_tension_n_m * cos_theta) / (rho * g * r_eff);
 
     if (target_depth_m >= h_eq * 0.99) {
         return 1e20;
@@ -126,12 +224,17 @@ double WashburnPenetrationModel::time_to_reach_depth(double target_depth_um,
     if (dt < 1e-6) dt = 1e-6;
 
     while (h < target_depth_m && t < 1e8) {
-        double dh_dt_numerator = surface_tension_n_m * cos_theta * r - rho * g * r * r * h;
-        double dh_dt_denominator = 4.0 * viscosity_pa_s * tau * std::max(h, 1e-9);
+        double dh_dt_numerator = surface_tension_n_m * cos_theta * r_eff - rho * g * r_eff * r_eff * h;
+        double dh_dt_denominator = 4.0 * viscosity_pa_s * tau_eff * std::max(h, 1e-9);
         if (dh_dt_denominator < 1e-20) break;
         if (dh_dt_numerator <= 0.0) break;
 
-        double dh_dt = dh_dt_numerator / dh_dt_denominator;
+        double dh_dt_ideal = dh_dt_numerator / dh_dt_denominator;
+        double shear_rate = dh_dt_ideal / r_eff;
+        double eta_eff = dynamic_viscosity_correction(viscosity_pa_s, shear_rate);
+        double eta_ratio = eta_eff / viscosity_pa_s;
+        double dh_dt = dh_dt_ideal / eta_ratio;
+
         double dh = dh_dt * dt;
 
         if (h + dh > target_depth_m) {
@@ -156,20 +259,40 @@ double WashburnPenetrationModel::penetration_rate(double depth_um,
                                                   double surface_tension_n_m,
                                                   double contact_angle_deg) const {
     if (depth_um <= 0.0) return 0.0;
+    if (crack_width_um <= 0.0) return 0.0;
+    if (viscosity_pa_s <= 0.0) return 0.0;
+    if (surface_tension_n_m <= 0.0) return 0.0;
 
-    double r = effective_radius(crack_width_um);
-    double theta_rad = contact_angle_deg * M_PI / 180.0;
-    double tau = config_.tortuosity_factor;
+    double r_base = effective_radius(crack_width_um);
+    double theta_eff_deg = contact_angle_deg;
+    double tau_eff = config_.tortuosity_factor;
+    double r_eff = r_base;
+    double ra_um = config_.wall_roughness_ra_um;
+
+    if (config_.wenzel_roughness_correction && ra_um > 0.0) {
+        double r_s = get_roughness_factor(ra_um);
+        theta_eff_deg = wenzel_contact_angle(contact_angle_deg, r_s);
+        tau_eff = roughness_tortuosity(ra_um);
+        r_eff = roughness_effective_radius(r_base, ra_um);
+    }
+
+    if (r_eff < 1e-12) return 0.0;
 
     double depth_m = depth_um * 1e-6;
+    double theta_rad = theta_eff_deg * M_PI / 180.0;
     double cos_theta = cos(theta_rad);
 
-    double numerator = surface_tension_n_m * cos_theta * r;
-    double denominator = 4.0 * viscosity_pa_s * tau * depth_m;
+    double numerator = surface_tension_n_m * cos_theta * r_eff;
+    double denominator = 4.0 * viscosity_pa_s * tau_eff * depth_m;
 
     if (denominator < 1e-20) return 0.0;
 
     double dh_dt_ideal = numerator / denominator;
+
+    double shear_rate = dh_dt_ideal / r_eff;
+    double eta_eff = dynamic_viscosity_correction(viscosity_pa_s, shear_rate);
+    double eta_ratio = eta_eff / viscosity_pa_s;
+    dh_dt_ideal = dh_dt_ideal / eta_ratio;
 
     double gravity_threshold_m = 1e-4;
     if (depth_m < gravity_threshold_m) {
@@ -178,7 +301,7 @@ double WashburnPenetrationModel::penetration_rate(double depth_um,
 
     double rho = 1000.0;
     double g = config_.gravity_m_s2;
-    double gravity_term = (rho * g * r * r) / (4.0 * viscosity_pa_s * tau);
+    double gravity_term = (rho * g * r_eff * r_eff) / (4.0 * viscosity_pa_s * tau_eff);
 
     double dh_dt = std::max(0.0, dh_dt_ideal - gravity_term);
     return dh_dt * 1e6;
@@ -215,6 +338,28 @@ PenetrationPrediction WashburnPenetrationModel::predict(int crack_id,
     result.surface_tension_n_m = surface_tension_n_m;
     result.contact_angle_deg = contact_angle_deg;
 
+    double ra_um = config_.wall_roughness_ra_um;
+    bool correction_applied = config_.wenzel_roughness_correction && ra_um > 0.0;
+    double r_s = 1.0;
+    double theta_w = contact_angle_deg;
+    double r_base = effective_radius(crack_width_um);
+    double r_eff_final = r_base;
+    double tau_eff_final = config_.tortuosity_factor;
+
+    if (correction_applied) {
+        r_s = get_roughness_factor(ra_um);
+        theta_w = wenzel_contact_angle(contact_angle_deg, r_s);
+        tau_eff_final = roughness_tortuosity(ra_um);
+        r_eff_final = roughness_effective_radius(r_base, ra_um);
+    }
+
+    result.wall_roughness_ra_um = ra_um;
+    result.roughness_factor = r_s;
+    result.wenzel_contact_angle = theta_w;
+    result.effective_radius_um = r_eff_final * 1e6;
+    result.effective_tortuosity = tau_eff_final;
+    result.roughness_correction_applied = correction_applied;
+
     double predicted_time_s = time_to_reach_depth(
         target_depth_um, crack_width_um, viscosity_pa_s,
         surface_tension_n_m, contact_angle_deg
@@ -250,7 +395,15 @@ PenetrationPrediction WashburnPenetrationModel::predict(int crack_id,
         {"gravity_m_s2", config_.gravity_m_s2},
         {"time_series_points", config_.time_series_points},
         {"effective_radius_um", effective_radius(crack_width_um) * 1e6},
-        {"capillary_pressure_pa", capillary_pressure(crack_width_um, surface_tension_n_m, contact_angle_deg)}
+        {"capillary_pressure_pa", capillary_pressure(crack_width_um, surface_tension_n_m, contact_angle_deg)},
+        {"wall_roughness_ra_um", ra_um},
+        {"wenzel_roughness_correction", correction_applied},
+        {"roughness_factor", r_s},
+        {"wenzel_contact_angle_deg", theta_w},
+        {"corrected_effective_radius_um", r_eff_final * 1e6},
+        {"corrected_tortuosity_factor", tau_eff_final},
+        {"roughness_tortuosity_coeff", config_.roughness_tortuosity_coeff},
+        {"roughness_radius_coeff", config_.roughness_radius_coeff}
     };
 
     result.result = result_to_json(result);
@@ -298,6 +451,15 @@ json WashburnPenetrationModel::result_to_json(const PenetrationPrediction& predi
         {"surface_roughness_factor", config_.surface_roughness_factor},
         {"equilibrium_penetration_depth_um", equilibrium_h_um},
         {"gravity_correction_applied", prediction.target_depth_um > 100.0}
+    };
+
+    j["roughness_correction"] = {
+        {"roughness_correction_applied", prediction.roughness_correction_applied},
+        {"wall_roughness_ra_um", prediction.wall_roughness_ra_um},
+        {"roughness_factor", prediction.roughness_factor},
+        {"wenzel_contact_angle_deg", prediction.wenzel_contact_angle},
+        {"effective_radius_um", prediction.effective_radius_um},
+        {"effective_tortuosity", prediction.effective_tortuosity}
     };
 
     return j;
