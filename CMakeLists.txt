@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(WIN32)
     add_definitions(-D_WIN32_WINNT=0x0A00)
+    add_definitions(-D_USE_MATH_DEFINES)
     set(Boost_USE_STATIC_LIBS ON)
 endif()
 
