@@ -91,6 +91,52 @@ double computeStressError(const StressGridPoint& p, double expected_stress) {
     return std::abs(p.stress.von_mises - expected_stress) / std::abs(expected_stress) * 100.0;
 }
 
+CrackInfo createCrackTipScenario() {
+    CrackInfo crack;
+    crack.id = 1;
+    crack.porcelain_id = 1;
+    crack.crack_code = "CRACK_TIP";
+    crack.max_depth = 0.5;
+    crack.max_width = 0.1;
+    crack.status = "active";
+    crack.detected_at = std::chrono::system_clock::now();
+
+    crack.points.clear();
+    for (int i = 0; i < 11; ++i) {
+        double t = static_cast<double>(i) / 10.0;
+        Point3D p;
+        p.x = -0.8 + t * 0.8;
+        p.y = 0.0;
+        p.z = 0.0;
+        p.depth = 0.5;
+        p.width = 0.1;
+        crack.points.push_back(p);
+    }
+
+    crack.total_length = 0.8;
+    return crack;
+}
+
+int countRefinedNodes(const std::vector<StressGridPoint>& grid_points) {
+    int count = 0;
+    for (const auto& gp : grid_points) {
+        if (gp.refinement_level > 0) {
+            count++;
+        }
+    }
+    return count;
+}
+
+int maxRefinementLevel(const std::vector<StressGridPoint>& grid_points) {
+    int max_level = 0;
+    for (const auto& gp : grid_points) {
+        if (gp.refinement_level > max_level) {
+            max_level = gp.refinement_level;
+        }
+    }
+    return max_level;
+}
+
 }
 
 TEST(StressFEM, SingleCrack_AnalysisProducesValidStressField) {
@@ -559,6 +605,324 @@ TEST(StressFEM, Acceptance_ErrorVsAnalyticalLessThan10pct) {
     }
 
     ASSERT_LT(max_deviation, 10.0);
+}
+
+TEST(StressFEM, AMR_Enabled_AdaptiveMeshCreated) {
+    StressAnalysisFEM fem;
+    FEMConfig config;
+    config.grid_resolution = 15;
+    config.use_adaptive_mesh = true;
+    config.max_refinement_level = 2;
+    config.refinement_stress_gradient_threshold = 10.0;
+    fem.set_config(config);
+
+    CrackInfo crack;
+    crack.id = 1;
+    crack.porcelain_id = 1;
+    crack.crack_code = "POINT_CRACK_CENTER";
+    crack.max_depth = 0.5;
+    crack.max_width = 0.1;
+    crack.total_length = 0.0;
+    crack.status = "active";
+    crack.detected_at = std::chrono::system_clock::now();
+
+    Point3D p;
+    p.x = 0.0;
+    p.y = 0.0;
+    p.z = 0.0;
+    p.depth = 0.5;
+    p.width = 0.1;
+    crack.points.push_back(p);
+
+    std::vector<CrackInfo> cracks;
+    cracks.push_back(crack);
+
+    size_t initial_node_count = config.grid_resolution * config.grid_resolution * config.grid_resolution;
+
+    auto result = fem.analyze(1, cracks);
+
+    ASSERT_FALSE(result.grid_points.empty());
+    ASSERT_GT(result.grid_points.size(), 0u);
+
+    int refined_count = countRefinedNodes(result.grid_points);
+    ASSERT_GT(refined_count, 0);
+
+    ASSERT_GT(result.grid_points.size(), initial_node_count);
+}
+
+TEST(StressFEM, AMR_Disabled_UniformMeshOnly) {
+    StressAnalysisFEM fem;
+    FEMConfig config;
+    config.grid_resolution = 15;
+    config.use_adaptive_mesh = false;
+    fem.set_config(config);
+
+    CrackInfo crack;
+    crack.id = 1;
+    crack.porcelain_id = 1;
+    crack.crack_code = "POINT_CRACK_CENTER";
+    crack.max_depth = 0.5;
+    crack.max_width = 0.1;
+    crack.total_length = 0.0;
+    crack.status = "active";
+    crack.detected_at = std::chrono::system_clock::now();
+
+    Point3D p;
+    p.x = 0.0;
+    p.y = 0.0;
+    p.z = 0.0;
+    p.depth = 0.5;
+    p.width = 0.1;
+    crack.points.push_back(p);
+
+    std::vector<CrackInfo> cracks;
+    cracks.push_back(crack);
+
+    size_t expected_node_count = config.grid_resolution * config.grid_resolution * config.grid_resolution;
+
+    auto result = fem.analyze(1, cracks);
+
+    ASSERT_FALSE(result.grid_points.empty());
+
+    for (const auto& gp : result.grid_points) {
+        ASSERT_EQ(gp.refinement_level, 0);
+    }
+
+    ASSERT_EQ(result.grid_points.size(), expected_node_count);
+}
+
+TEST(StressFEM, AMR_HighGradientRegion_Refined) {
+    StressAnalysisFEM fem;
+    FEMConfig config;
+    config.grid_resolution = 20;
+    config.use_adaptive_mesh = true;
+    config.max_refinement_level = 2;
+    config.refinement_stress_gradient_threshold = 15.0;
+    fem.set_config(config);
+
+    std::vector<CrackInfo> cracks;
+    cracks.push_back(createCrackTipScenario());
+
+    auto result_amr = fem.analyze(1, cracks);
+    ASSERT_FALSE(result_amr.grid_points.empty());
+
+    size_t max_grad_idx = 0;
+    double max_stress = 0.0;
+    for (size_t i = 0; i < result_amr.grid_points.size(); ++i) {
+        if (result_amr.grid_points[i].stress.von_mises > max_stress) {
+            max_stress = result_amr.grid_points[i].stress.von_mises;
+            max_grad_idx = i;
+        }
+    }
+
+    const auto& max_pt = result_amr.grid_points[max_grad_idx];
+    bool near_refined = false;
+    double avg_refined_stress = 0.0;
+    int refined_count = 0;
+    double avg_unrefined_stress = 0.0;
+    int unrefined_count = 0;
+
+    for (const auto& gp : result_amr.grid_points) {
+        double dx = gp.x - max_pt.x;
+        double dy = gp.y - max_pt.y;
+        double dz = gp.z - max_pt.z;
+        double dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+        if (dist < 0.2) {
+            if (gp.refinement_level > 0) {
+                near_refined = true;
+                avg_refined_stress += gp.stress.von_mises;
+                refined_count++;
+            } else {
+                avg_unrefined_stress += gp.stress.von_mises;
+                unrefined_count++;
+            }
+        }
+    }
+
+    ASSERT_TRUE(near_refined || max_pt.refinement_level > 0);
+
+    if (refined_count > 0 && unrefined_count > 0) {
+        avg_refined_stress /= refined_count;
+        avg_unrefined_stress /= unrefined_count;
+        ASSERT_GT(avg_refined_stress, avg_unrefined_stress * 1.15);
+    }
+}
+
+TEST(StressFEM, AMR_MaxLevelRespected) {
+    StressAnalysisFEM fem;
+    FEMConfig config;
+    config.grid_resolution = 12;
+    config.use_adaptive_mesh = true;
+    config.max_refinement_level = 3;
+    config.max_total_nodes = 50000;
+    config.refinement_stress_gradient_threshold = 5.0;
+    fem.set_config(config);
+
+    std::vector<CrackInfo> cracks;
+    std::mt19937 gen(123);
+    std::uniform_real_distribution<double> dist(-0.6, 0.6);
+    std::uniform_real_distribution<double> angle_dist(0.0, M_PI);
+
+    for (int i = 0; i < 5; ++i) {
+        CrackInfo crack;
+        crack.id = i + 1;
+        crack.porcelain_id = 1;
+        crack.crack_code = "CRACK_" + std::to_string(i);
+        crack.max_depth = 0.4;
+        crack.max_width = 0.08;
+        crack.status = "active";
+        crack.detected_at = std::chrono::system_clock::now();
+
+        double cx = dist(gen);
+        double cy = dist(gen);
+        double length = 0.3 + std::abs(dist(gen)) * 0.3;
+        double angle = angle_dist(gen);
+
+        for (int j = 0; j < 8; ++j) {
+            double t = static_cast<double>(j) / 7.0;
+            Point3D p;
+            p.x = cx - length * 0.5 * std::cos(angle) + t * length * std::cos(angle);
+            p.y = cy - length * 0.5 * std::sin(angle) + t * length * std::sin(angle);
+            p.z = 0.0;
+            p.depth = crack.max_depth;
+            p.width = crack.max_width;
+            crack.points.push_back(p);
+        }
+
+        crack.total_length = length;
+        cracks.push_back(crack);
+    }
+
+    auto result = fem.analyze(1, cracks);
+    ASSERT_FALSE(result.grid_points.empty());
+
+    int max_level = maxRefinementLevel(result.grid_points);
+    ASSERT_LE(max_level, 3);
+
+    ASSERT_LE(static_cast<int>(result.grid_points.size()), config.max_total_nodes);
+}
+
+TEST(StressFEM, AMR_StressConcentration_Captured) {
+    FEMConfig config_amr;
+    config_amr.grid_resolution = 15;
+    config_amr.use_adaptive_mesh = true;
+    config_amr.max_refinement_level = 3;
+    config_amr.refinement_stress_gradient_threshold = 10.0;
+
+    FEMConfig config_uniform;
+    config_uniform.grid_resolution = 15;
+    config_uniform.use_adaptive_mesh = false;
+
+    std::vector<CrackInfo> cracks;
+    cracks.push_back(createCrackTipScenario());
+
+    StressAnalysisFEM fem_amr;
+    fem_amr.set_config(config_amr);
+    auto result_amr = fem_amr.analyze(1, cracks);
+
+    StressAnalysisFEM fem_uniform;
+    fem_uniform.set_config(config_uniform);
+    auto result_uniform = fem_uniform.analyze(1, cracks);
+
+    ASSERT_FALSE(result_amr.grid_points.empty());
+    ASSERT_FALSE(result_uniform.grid_points.empty());
+
+    ASSERT_GT(result_amr.max_von_mises, result_uniform.max_von_mises * 1.15);
+}
+
+TEST(StressFEM, AMR_StressGradient_Threshold) {
+    StressAnalysisFEM fem;
+    FEMConfig config_high;
+    config_high.grid_resolution = 15;
+    config_high.use_adaptive_mesh = true;
+    config_high.max_refinement_level = 2;
+    config_high.refinement_stress_gradient_threshold = 50.0;
+    fem.set_config(config_high);
+
+    std::vector<CrackInfo> cracks;
+    cracks.push_back(createCrackTipScenario());
+
+    auto result_high = fem.analyze(1, cracks);
+    ASSERT_FALSE(result_high.grid_points.empty());
+
+    int refined_high = countRefinedNodes(result_high.grid_points);
+
+    FEMConfig config_low;
+    config_low.grid_resolution = 15;
+    config_low.use_adaptive_mesh = true;
+    config_low.max_refinement_level = 2;
+    config_low.refinement_stress_gradient_threshold = 1.0;
+    fem.set_config(config_low);
+
+    auto result_low = fem.analyze(1, cracks);
+    ASSERT_FALSE(result_low.grid_points.empty());
+
+    int refined_low = countRefinedNodes(result_low.grid_points);
+
+    ASSERT_GT(refined_low, refined_high);
+}
+
+TEST(StressFEM, AMR_Coarsening_Works) {
+    StressAnalysisFEM fem;
+    FEMConfig config;
+    config.grid_resolution = 15;
+    config.use_adaptive_mesh = true;
+    config.max_refinement_level = 2;
+    config.refinement_stress_gradient_threshold = 10.0;
+    config.coarsening_stress_gradient_threshold = 5.0;
+    fem.set_config(config);
+
+    std::vector<CrackInfo> cracks_high;
+    cracks_high.push_back(createCrackTipScenario());
+    auto result_high = fem.analyze(1, cracks_high);
+
+    int max_level_high = maxRefinementLevel(result_high.grid_points);
+    ASSERT_GE(max_level_high, 1);
+
+    int refined_high = countRefinedNodes(result_high.grid_points);
+    ASSERT_GT(refined_high, 0);
+
+    std::vector<CrackInfo> cracks_low;
+    auto result_low = fem.analyze(1, cracks_low);
+
+    int max_level_low = maxRefinementLevel(result_low.grid_points);
+    ASSERT_LE(max_level_low, 0);
+
+    int refined_low = countRefinedNodes(result_low.grid_points);
+    ASSERT_EQ(refined_low, 0);
+
+    ASSERT_LT(result_low.grid_points.size(), result_high.grid_points.size());
+}
+
+TEST(StressFEM, AMR_InvalidConfig_Handled) {
+    StressAnalysisFEM fem;
+    FEMConfig config_invalid_level;
+    config_invalid_level.grid_resolution = 12;
+    config_invalid_level.use_adaptive_mesh = true;
+    config_invalid_level.max_refinement_level = -1;
+    fem.set_config(config_invalid_level);
+
+    std::vector<CrackInfo> cracks;
+    cracks.push_back(createCrackTipScenario());
+
+    auto result_neg = fem.analyze(1, cracks);
+    ASSERT_FALSE(result_neg.grid_points.empty());
+
+    int max_level_neg = maxRefinementLevel(result_neg.grid_points);
+    ASSERT_GE(max_level_neg, 0);
+
+    FEMConfig config_small_nodes;
+    config_small_nodes.grid_resolution = 12;
+    config_small_nodes.use_adaptive_mesh = true;
+    config_small_nodes.max_refinement_level = 3;
+    config_small_nodes.max_total_nodes = 100;
+    fem.set_config(config_small_nodes);
+
+    auto result_small = fem.analyze(1, cracks);
+    ASSERT_FALSE(result_small.grid_points.empty());
+
+    ASSERT_LE(static_cast<int>(result_small.grid_points.size()), config_small_nodes.max_total_nodes + 8);
 }
 
 int main() {
