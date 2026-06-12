@@ -15,6 +15,32 @@ constexpr double DEFAULT_ETA = 1.0;
 constexpr double DEFAULT_CRACK_WIDTH_UM = 10.0;
 constexpr double DEFAULT_TORTUOSITY = 1.5;
 constexpr double DEFAULT_ROUGHNESS = 1.2;
+constexpr double MIN_ROUGHNESS_FACTOR = 0.1;
+constexpr double MAX_ROUGHNESS_FACTOR = 3.0;
+
+class WashburnModelTestAccessor {
+public:
+    explicit WashburnModelTestAccessor(const WashburnPenetrationModel& model) : model_(model) {}
+
+    double wenzel_contact_angle(double theta_0_deg, double roughness_factor) const {
+        return model_.wenzel_contact_angle(theta_0_deg, roughness_factor);
+    }
+
+    double roughness_tortuosity(double ra_um) const {
+        return model_.roughness_tortuosity(ra_um);
+    }
+
+    double roughness_effective_radius(double base_radius, double ra_um) const {
+        return model_.roughness_effective_radius(base_radius, ra_um);
+    }
+
+    double dynamic_viscosity_correction(double viscosity, double shear_rate) const {
+        return model_.dynamic_viscosity_correction(viscosity, shear_rate);
+    }
+
+private:
+    const WashburnPenetrationModel& model_;
+};
 
 double computeEffectiveRadius(double crack_width_um) {
     double crack_width_m = crack_width_um * 1e-6;
@@ -354,6 +380,228 @@ TEST(Washburn, Acceptance_PredictionErrorLessThan15pct) {
     double expected_um = 470.0;
     ASSERT_GT(h_pred, 0.0);
     ASSERT_NEAR(h_pred, expected_um, 15.0);
+}
+
+TEST(WashburnModelTests, RoughnessFactor_ValidRange) {
+    WashburnPenetrationModel model;
+    WashburnConfig cfg;
+    model.set_config(cfg);
+
+    double r_s_low = model.get_roughness_factor(0.1);
+    ASSERT_GT(r_s_low, 1.0);
+    ASSERT_LT(r_s_low, 1.2);
+
+    double r_s_high = model.get_roughness_factor(5.0);
+    ASSERT_GT(r_s_high, 1.0);
+
+    ASSERT_GE(r_s_low, MIN_ROUGHNESS_FACTOR);
+    ASSERT_LE(r_s_low, MAX_ROUGHNESS_FACTOR);
+    ASSERT_GE(r_s_high, MIN_ROUGHNESS_FACTOR);
+    ASSERT_LE(r_s_high, MAX_ROUGHNESS_FACTOR);
+
+    double r_s_mid = model.get_roughness_factor(2.0);
+    ASSERT_GE(r_s_mid, MIN_ROUGHNESS_FACTOR);
+    ASSERT_LE(r_s_mid, MAX_ROUGHNESS_FACTOR);
+}
+
+TEST(WashburnModelTests, WenzelContactAngle_Corrected) {
+    WashburnPenetrationModel model;
+    WashburnModelTestAccessor accessor(model);
+
+    double r_s = model.get_roughness_factor(2.0);
+    ASSERT_GT(r_s, 1.0);
+
+    double theta_w_30 = accessor.wenzel_contact_angle(30.0, r_s);
+    ASSERT_LT(theta_w_30, 30.0);
+    ASSERT_GT(theta_w_30, 0.0);
+
+    double theta_w_90 = accessor.wenzel_contact_angle(90.0, r_s);
+    ASSERT_NEAR(theta_w_90, 90.0, 1.0);
+
+    double theta_w_120 = accessor.wenzel_contact_angle(120.0, r_s);
+    ASSERT_GT(theta_w_120, 120.0);
+    ASSERT_LT(theta_w_120, 180.0);
+}
+
+TEST(WashburnModelTests, Roughness_IncreasesTortuosity) {
+    WashburnPenetrationModel model;
+    WashburnModelTestAccessor accessor(model);
+
+    double tau_eff1 = accessor.roughness_tortuosity(0.1);
+    double tau_eff2 = accessor.roughness_tortuosity(5.0);
+
+    ASSERT_GT(tau_eff2, tau_eff1);
+    ASSERT_GT(tau_eff1, 0.0);
+    ASSERT_GT(tau_eff2, 0.0);
+}
+
+TEST(WashburnModelTests, Roughness_ReducesEffectiveRadius) {
+    WashburnPenetrationModel model;
+    WashburnModelTestAccessor accessor(model);
+
+    double base_r = 10.0;
+    double r_eff1 = accessor.roughness_effective_radius(base_r, 0.1);
+    double r_eff2 = accessor.roughness_effective_radius(base_r, 5.0);
+
+    ASSERT_LT(r_eff2, r_eff1);
+    ASSERT_GT(r_eff1, 0.0);
+    ASSERT_GT(r_eff2, 0.0);
+    ASSERT_LT(r_eff1, base_r);
+    ASSERT_LT(r_eff2, base_r);
+}
+
+TEST(WashburnModelTests, PenetrationDepth_RoughnessCorrectionApplied) {
+    WashburnPenetrationModel model_corrected;
+    WashburnConfig cfg_corrected;
+    cfg_corrected.wall_roughness_ra_um = 2.0;
+    cfg_corrected.wenzel_roughness_correction = true;
+    model_corrected.set_config(cfg_corrected);
+
+    WashburnPenetrationModel model_uncorrected;
+    WashburnConfig cfg_uncorrected;
+    cfg_uncorrected.wall_roughness_ra_um = 2.0;
+    cfg_uncorrected.wenzel_roughness_correction = false;
+    model_uncorrected.set_config(cfg_uncorrected);
+
+    double crack_width = 50.0;
+    double t = 100.0;
+    double eta = 1.0;
+
+    double h_corrected = model_corrected.penetration_depth_at_time(
+        t, crack_width, eta, DEFAULT_GAMMA, DEFAULT_THETA_DEG
+    );
+    double h_uncorrected = model_uncorrected.penetration_depth_at_time(
+        t, crack_width, eta, DEFAULT_GAMMA, DEFAULT_THETA_DEG
+    );
+
+    ASSERT_GT(h_corrected, 0.0);
+    ASSERT_GT(h_uncorrected, 0.0);
+    ASSERT_FALSE(std::isnan(h_corrected));
+    ASSERT_FALSE(std::isnan(h_uncorrected));
+
+    CrackInfo crack = createTestCrack(crack_width * 1e-6);
+    RepairMaterial mat = createTestMaterial(eta, DEFAULT_GAMMA, DEFAULT_THETA_DEG);
+
+    auto result_corrected = model_corrected.predict(1, 1, crack, mat, 100.0);
+    ASSERT_TRUE(result_corrected.roughness_correction_applied);
+
+    auto result_uncorrected = model_uncorrected.predict(1, 1, crack, mat, 100.0);
+    ASSERT_FALSE(result_uncorrected.roughness_correction_applied);
+}
+
+TEST(WashburnModelTests, PenetrationRate_WithRoughness) {
+    WashburnPenetrationModel model_corrected;
+    WashburnConfig cfg_corrected;
+    cfg_corrected.wall_roughness_ra_um = 3.0;
+    cfg_corrected.wenzel_roughness_correction = true;
+    model_corrected.set_config(cfg_corrected);
+
+    WashburnPenetrationModel model_uncorrected;
+    WashburnConfig cfg_uncorrected;
+    cfg_uncorrected.wall_roughness_ra_um = 3.0;
+    cfg_uncorrected.wenzel_roughness_correction = false;
+    model_uncorrected.set_config(cfg_uncorrected);
+
+    double crack_width = 50.0;
+    double eta = 1.0;
+    double theta = 30.0;
+    double h = 50.0;
+
+    double rate_corrected = model_corrected.penetration_rate(
+        h, crack_width, eta, DEFAULT_GAMMA, theta
+    );
+    double rate_uncorrected = model_uncorrected.penetration_rate(
+        h, crack_width, eta, DEFAULT_GAMMA, theta
+    );
+
+    ASSERT_GT(rate_corrected, 0.0);
+    ASSERT_GT(rate_uncorrected, 0.0);
+    ASSERT_LT(rate_corrected, rate_uncorrected);
+}
+
+TEST(WashburnModelTests, RoughnessExtremes_Handled) {
+    WashburnPenetrationModel model;
+    WashburnConfig cfg;
+    model.set_config(cfg);
+
+    WashburnModelTestAccessor accessor(model);
+
+    double r_s_smooth = model.get_roughness_factor(0.0);
+    ASSERT_NEAR(r_s_smooth, 1.0, 1e-10);
+
+    double r_s_extreme = model.get_roughness_factor(10.0);
+    ASSERT_FALSE(std::isnan(r_s_extreme));
+    ASSERT_FALSE(std::isinf(r_s_extreme));
+    ASSERT_GE(r_s_extreme, MIN_ROUGHNESS_FACTOR);
+    ASSERT_LE(r_s_extreme, MAX_ROUGHNESS_FACTOR);
+
+    double r_s_negative = model.get_roughness_factor(-1.0);
+    ASSERT_FALSE(std::isnan(r_s_negative));
+    ASSERT_FALSE(std::isinf(r_s_negative));
+    ASSERT_NEAR(r_s_negative, 1.0, 1e-10);
+
+    double h_smooth = model.penetration_depth_at_time(
+        100.0, DEFAULT_CRACK_WIDTH_UM, DEFAULT_ETA, DEFAULT_GAMMA, DEFAULT_THETA_DEG
+    );
+    ASSERT_FALSE(std::isnan(h_smooth));
+    ASSERT_FALSE(std::isinf(h_smooth));
+    ASSERT_GT(h_smooth, 0.0);
+
+    double tau_extreme = accessor.roughness_tortuosity(10.0);
+    ASSERT_FALSE(std::isnan(tau_extreme));
+    ASSERT_FALSE(std::isinf(tau_extreme));
+    ASSERT_GT(tau_extreme, 0.0);
+
+    double r_extreme = accessor.roughness_effective_radius(10.0, 10.0);
+    ASSERT_FALSE(std::isnan(r_extreme));
+    ASSERT_FALSE(std::isinf(r_extreme));
+    ASSERT_GT(r_extreme, 0.0);
+}
+
+TEST(WashburnModelTests, DynamicViscosityCorrection_ShearThinning) {
+    WashburnPenetrationModel model;
+    WashburnModelTestAccessor accessor(model);
+
+    double eta0 = 1.0;
+
+    double eta_low = accessor.dynamic_viscosity_correction(eta0, 1.0);
+    ASSERT_GT(eta_low, 0.0);
+    ASSERT_LE(eta_low, eta0);
+
+    double eta_high = accessor.dynamic_viscosity_correction(eta0, 1e6);
+    ASSERT_GT(eta_high, 0.0);
+    ASSERT_LT(eta_high, eta0);
+    ASSERT_LT(eta_high, eta_low);
+
+    double eta_zero = accessor.dynamic_viscosity_correction(eta0, 0.0);
+    ASSERT_NEAR(eta_zero, eta0, 1e-10);
+
+    double eta_negative = accessor.dynamic_viscosity_correction(eta0, -1.0);
+    ASSERT_NEAR(eta_negative, eta0, 1e-10);
+
+    double eta_invalid = accessor.dynamic_viscosity_correction(-1.0, 1.0);
+    ASSERT_NEAR(eta_invalid, 0.0, 1e-10);
+}
+
+TEST(WashburnModelTests, Predict_OutputsRoughnessParams) {
+    WashburnPenetrationModel model;
+    WashburnConfig cfg;
+    cfg.wall_roughness_ra_um = 2.0;
+    cfg.wenzel_roughness_correction = true;
+    model.set_config(cfg);
+
+    CrackInfo crack = createTestCrack(50e-6);
+    RepairMaterial mat = createTestMaterial(DEFAULT_ETA, DEFAULT_GAMMA, DEFAULT_THETA_DEG);
+
+    auto result = model.predict(1, 1, crack, mat, 200.0);
+
+    ASSERT_GT(result.wall_roughness_ra_um, 0.0);
+    ASSERT_GT(result.roughness_factor, 1.0);
+    ASSERT_GT(result.wenzel_contact_angle, 0.0);
+    ASSERT_LT(result.wenzel_contact_angle, 180.0);
+    ASSERT_GT(result.effective_radius_um, 0.0);
+    ASSERT_GT(result.effective_tortuosity, 1.0);
+    ASSERT_TRUE(result.roughness_correction_applied);
 }
 
 int main() {
