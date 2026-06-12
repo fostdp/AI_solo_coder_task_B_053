@@ -79,6 +79,13 @@ struct StressFEMConfig {
     double poissons_ratio = 0.22;
     double crack_density_sensitivity = 50.0;
     double max_stress_mpa = 300.0;
+    bool use_adaptive_mesh = true;
+    int max_refinement_level = 3;
+    double refinement_stress_gradient_threshold = 20.0;
+    double refinement_crack_density_threshold = 0.3;
+    double coarsening_stress_gradient_threshold = 5.0;
+    int min_grid_resolution = 20;
+    int max_total_nodes = 500000;
 };
 
 struct WashburnConfig {
@@ -87,6 +94,12 @@ struct WashburnConfig {
     double tortuosity_factor = 1.5;
     double surface_roughness_factor = 1.2;
     int time_series_points = 100;
+    double wall_roughness_ra_um = 0.5;
+    bool wenzel_roughness_correction = true;
+    double roughness_tortuosity_coeff = 0.3;
+    double roughness_radius_coeff = 0.15;
+    double min_roughness_factor = 0.1;
+    double max_roughness_factor = 3.0;
 };
 
 struct BendingTestConfig {
@@ -97,6 +110,11 @@ struct BendingTestConfig {
     double porcelain_strength_mpa = 120.0;
     double repair_interface_strength_ratio = 0.85;
     int load_steps = 50;
+    bool enable_bayesian_calibration = false;
+    int calibration_max_iter = 50;
+    int calibration_initial_samples = 10;
+    double calibration_exploration_weight = 0.01;
+    double calibration_noise_std = 0.05;
 };
 
 struct AlgorithmConfig {
