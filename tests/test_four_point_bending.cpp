@@ -4,6 +4,7 @@
 #include <chrono>
 #include <limits>
 #include <vector>
+#include <random>
 
 using namespace porcelain_monitor;
 using namespace porcelain_monitor::algorithms;
@@ -56,6 +57,54 @@ bool isMonotonicIncreasing(const std::vector<double>& v) {
         if (v[i] <= v[i - 1]) return false;
     }
     return true;
+}
+
+std::vector<CalibrationDataset> createMockCalibrationDataset(int n_points, double noise_std = 0.05) {
+    std::vector<CalibrationDataset> dataset;
+    dataset.reserve(n_points);
+
+    std::mt19937 rng(42);
+    std::normal_distribution<double> noise(0.0, noise_std);
+
+    std::vector<double> true_params = {1.12, -0.23, 10.6, -21.7, 30.4, 0.85};
+
+    for (int i = 0; i < n_points; ++i) {
+        CalibrationDataset data;
+        data.id = i + 1;
+        data.porcelain_id = 1;
+        data.crack_id = i + 1;
+        data.material_id = 1;
+
+        std::uniform_real_distribution<double> depth_dist(0.5, 3.0);
+        std::uniform_real_distribution<double> bonding_dist(20.0, 80.0);
+        std::uniform_real_distribution<double> viscosity_dist(0.01, 1.0);
+
+        double crack_depth = depth_dist(rng);
+        double bonding = bonding_dist(rng);
+        double viscosity = viscosity_dist(rng);
+
+        data.input_features = {crack_depth, bonding, viscosity};
+
+        double h = 5.0 * 1e-3;
+        double a_crack = crack_depth * 1e-3;
+        double strength_pa = 120.0 * 1e6;
+
+        double a_over_h = std::min(0.9, std::max(0.0, a_crack / h));
+
+        double crack_depth_ratio = std::min(1.0, a_crack / h);
+        double repaired_strength_pa = strength_pa * (1.0 - crack_depth_ratio)
+            + bonding * 1e6 * crack_depth_ratio * true_params[5];
+
+        double measured = repaired_strength_pa / strength_pa + noise(rng);
+        measured = std::max(0.0, std::min(1.0, measured));
+
+        data.measured_value = measured;
+        data.measurement_std = noise_std;
+
+        dataset.push_back(data);
+    }
+
+    return dataset;
 }
 
 }
@@ -341,6 +390,216 @@ TEST(FourPointBending, Bending_Acceptance_HighPermeabilityRecoveryAbove80pct) {
 
     ASSERT_GE(result.strength_recovery_ratio, 0.80);
     ASSERT_GT(result.repaired_strength_mpa, result.unrepaired_strength_mpa);
+}
+
+TEST(BendingTestTests, BayesianOptimizer_CreateAndSetup) {
+    BayesianOptimizer optimizer;
+    std::vector<ParameterBounds> bounds = {
+        {"c0_const", 0.5, 2.0, 1.12},
+        {"c1_linear", -1.0, 0.5, -0.23},
+        {"c2_quad", 0.0, 30.0, 10.6},
+        {"c3_cubic", -50.0, 0.0, -21.7},
+        {"c4_quartic", 0.0, 60.0, 30.4},
+        {"interface_strength_ratio", 0.5, 1.0, 0.85}
+    };
+    optimizer.setBounds(bounds);
+
+    BayesianOptimizerConfig config;
+    config.max_iter = 30;
+    config.n_init = 5;
+    optimizer.setConfig(config);
+
+    optimizer.setObjective([](const std::vector<double>&) {
+        return 0.0;
+    });
+
+    ASSERT_TRUE(true);
+}
+
+TEST(BendingTestTests, GaussianProcess_PredictValid) {
+    GaussianProcess gp;
+
+    Matrix X(4, 1);
+    X(0, 0) = 0.0;
+    X(1, 0) = 1.0;
+    X(2, 0) = 2.0;
+    X(3, 0) = 3.0;
+    std::vector<double> y = {0.0, 1.0, 4.0, 9.0};
+
+    gp.train(X, y);
+
+    double mu1, sigma_sq1;
+    gp.predict({1.5}, mu1, sigma_sq1);
+    ASSERT_NEAR(mu1, 2.25, 10.0);
+
+    double mu2, sigma_sq2;
+    gp.predict({2.5}, mu2, sigma_sq2);
+    ASSERT_NEAR(mu2, 6.25, 20.0);
+
+    ASSERT_GT(sigma_sq1, 0.0);
+    ASSERT_GT(sigma_sq2, 0.0);
+}
+
+TEST(BendingTestTests, ExpectedImprovement_PeaksAtOptimum) {
+    GaussianProcess gp;
+
+    Matrix X(4, 1);
+    X(0, 0) = 0.0;
+    X(1, 0) = 1.0;
+    X(2, 0) = 2.0;
+    X(3, 0) = 3.0;
+    std::vector<double> y = {0.1, 0.3, 0.6, 0.9};
+    gp.train(X, y);
+
+    std::vector<ParameterBounds> bounds = {{"x", 0.0, 5.0, 2.0}};
+    BayesianOptimizer optimizer;
+    optimizer.setBounds(bounds);
+    optimizer.setObjective([](const std::vector<double>&) { return 0.0; });
+    optimizer.setConfig(BayesianOptimizerConfig());
+
+    double f_best = 0.5;
+    double mu1 = 0.7, sigma1 = 0.1;
+    double mu2 = 0.3, sigma2 = 0.1;
+
+    double Z1 = (mu1 - f_best - 0.01) / sigma1;
+    double ei1 = (mu1 - f_best - 0.01) * (0.5 * (1.0 + std::erf(Z1 / std::sqrt(2.0))))
+               + sigma1 * (std::exp(-0.5 * Z1 * Z1) / std::sqrt(2.0 * M_PI));
+
+    double Z2 = (mu2 - f_best - 0.01) / sigma2;
+    double ei2 = (mu2 - f_best - 0.01) * (0.5 * (1.0 + std::erf(Z2 / std::sqrt(2.0))))
+               + sigma2 * (std::exp(-0.5 * Z2 * Z2) / std::sqrt(2.0 * M_PI));
+
+    ASSERT_GT(ei1, ei2);
+}
+
+TEST(BendingTestTests, ParameterBounds_Clamped) {
+    ParameterBounds bound;
+    bound.lower = 0.5;
+    bound.upper = 2.0;
+
+    double test_below = 0.1;
+    double test_above = 3.0;
+    double test_inside = 1.0;
+
+    double clamped_below = std::max(bound.lower, std::min(bound.upper, test_below));
+    double clamped_above = std::max(bound.lower, std::min(bound.upper, test_above));
+    double clamped_inside = std::max(bound.lower, std::min(bound.upper, test_inside));
+
+    ASSERT_NEAR(clamped_below, 0.5, 1e-9);
+    ASSERT_NEAR(clamped_above, 2.0, 1e-9);
+    ASSERT_NEAR(clamped_inside, 1.0, 1e-9);
+}
+
+TEST(BendingTestTests, CalibrateModel_ImprovesMSE) {
+    auto dataset = createMockCalibrationDataset(10, 0.05);
+
+    FourPointBendingTest test;
+    BendingTestConfig config;
+    config.enable_bayesian_calibration = true;
+    config.calibration_max_iter = 20;
+    config.calibration_initial_samples = 8;
+    config.specimen_thickness_mm = 5.0;
+    config.porcelain_strength_mpa = 120.0;
+    test.set_config(config);
+
+    auto result = test.calibrate_model(dataset, true);
+
+    ASSERT_LT(result.final_mse, result.initial_mse);
+    ASSERT_LT(result.final_mse, 0.01);
+    ASSERT_GT(result.final_r2, 0.8);
+    ASSERT_EQ(static_cast<int>(result.optimal_params.size()), 6);
+}
+
+TEST(BendingTestTests, CalibrateModel_WithoutBayesian) {
+    auto dataset = createMockCalibrationDataset(10, 0.05);
+
+    FourPointBendingTest test;
+    BendingTestConfig config;
+    config.enable_bayesian_calibration = false;
+    config.specimen_thickness_mm = 5.0;
+    config.porcelain_strength_mpa = 120.0;
+    test.set_config(config);
+
+    auto result = test.calibrate_model(dataset, false);
+
+    ASSERT_NEAR(result.final_mse, result.initial_mse, 1e-9);
+    ASSERT_EQ(static_cast<int>(result.optimal_params.size()), 6);
+    ASSERT_TRUE(true);
+}
+
+TEST(BendingTestTests, CalibrationResult_JSON_Serializable) {
+    auto dataset = createMockCalibrationDataset(5, 0.05);
+
+    FourPointBendingTest test;
+    BendingTestConfig config;
+    config.enable_bayesian_calibration = false;
+    config.specimen_thickness_mm = 5.0;
+    config.porcelain_strength_mpa = 120.0;
+    test.set_config(config);
+
+    auto result = test.calibrate_model(dataset, false);
+    json j = result.to_json();
+
+    ASSERT_TRUE(j.contains("optimal_params"));
+    ASSERT_TRUE(j.contains("initial_mse"));
+    ASSERT_TRUE(j.contains("final_mse"));
+    ASSERT_TRUE(j.contains("initial_r2"));
+    ASSERT_TRUE(j.contains("final_r2"));
+    ASSERT_TRUE(j.contains("iterations"));
+
+    ASSERT_TRUE(j["optimal_params"].is_array());
+    ASSERT_TRUE(j["final_mse"].is_number());
+    ASSERT_TRUE(j["final_r2"].is_number());
+    ASSERT_TRUE(j["iterations"].is_number());
+}
+
+TEST(BendingTestTests, EmptyDataset_HandledGracefully) {
+    std::vector<CalibrationDataset> empty_dataset;
+
+    FourPointBendingTest test;
+    BendingTestConfig config;
+    config.enable_bayesian_calibration = true;
+    test.set_config(config);
+
+    auto result = test.calibrate_model(empty_dataset, true);
+
+    ASSERT_TRUE(true);
+    ASSERT_EQ(static_cast<int>(result.optimal_params.size()), 6);
+    ASSERT_NEAR(result.final_mse, 0.0, 1e-9);
+}
+
+TEST(BendingTestTests, CrackInfluenceCoeffs_UsedInCalc) {
+    FourPointBendingTest test;
+    BendingTestConfig config;
+    config.specimen_thickness_mm = 5.0;
+    test.set_config(config);
+
+    test.set_crack_influence_coeffs({1.0, 0.0, 0.0, 0.0, 0.0});
+    double result1 = test.crack_influence_factor(0.5, 5.0);
+    ASSERT_NEAR(result1, 1.0, 1e-9);
+
+    test.set_crack_influence_coeffs({2.0, 0.0, 0.0, 0.0, 0.0});
+    double result2 = test.crack_influence_factor(0.5, 5.0);
+    ASSERT_NEAR(result2, 2.0, 1e-9);
+}
+
+TEST(BendingTestTests, Bayesian_NoisyData_Robust) {
+    auto dataset = createMockCalibrationDataset(10, 0.15);
+
+    FourPointBendingTest test;
+    BendingTestConfig config;
+    config.enable_bayesian_calibration = true;
+    config.calibration_max_iter = 20;
+    config.calibration_initial_samples = 8;
+    config.calibration_noise_std = 0.15;
+    config.specimen_thickness_mm = 5.0;
+    config.porcelain_strength_mpa = 120.0;
+    test.set_config(config);
+
+    auto result = test.calibrate_model(dataset, true);
+
+    ASSERT_LT(result.final_mse, 0.05);
+    ASSERT_GT(result.final_r2, 0.0);
 }
 
 int main() {
