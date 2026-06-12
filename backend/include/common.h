@@ -274,6 +274,7 @@ struct StressGridPoint {
     StressTensor stress;
     double crack_density;
     double principal_direction;
+    int refinement_level;
 };
 
 struct StressAnalysisResult {
@@ -306,6 +307,12 @@ struct PenetrationPrediction {
     std::vector<double> depth_series;
     json result;
     std::chrono::system_clock::time_point created_at;
+    double wall_roughness_ra_um;
+    double roughness_factor;
+    double wenzel_contact_angle;
+    double effective_radius_um;
+    double effective_tortuosity;
+    bool roughness_correction_applied;
 };
 
 struct BendingTestResult {
@@ -383,7 +390,8 @@ inline void to_json(json& j, const StressGridPoint& p) {
         {"x", p.x}, {"y", p.y}, {"z", p.z},
         {"stress", p.stress},
         {"crack_density", p.crack_density},
-        {"principal_direction", p.principal_direction}
+        {"principal_direction", p.principal_direction},
+        {"refinement_level", p.refinement_level}
     };
 }
 
